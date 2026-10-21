@@ -90,4 +90,7 @@ Processing fees depend on the donor's country and payment method and are deducte
 - `ASPNETCORE_ENVIRONMENT`: set to `Production` in production.
 - Back up `App_Data/kindwell.db` and `wwwroot/uploads/` together.
 - Deploy behind HTTPS with an accurately forwarded external scheme and host. Restrict access to the server filesystem and keep secrets in the host's secret manager.
-- The included campaigns are illustrative sample records, not verified beneficiaries or live appeals.
+- The included campaigns are illustrative sample records, not verified beneficiaries or live appeals.#   k i n d w e l l -  
+ #   k i n d w e l l -  
+ #   k i n d w e l l -  
+ 
