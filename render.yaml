@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: kindwell
+    runtime: docker
+    plan: starter
+    healthCheckPath: /
+    disk:
+      name: kindwell-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: PAYLIO_API_KEY
+        sync: false
+      - key: PAYLIO_WALLET_ADDRESS
+        sync: false
+      - key: FLUTTERWAVE_SECRET_KEY
+        sync: false
+      - key: FLUTTERWAVE_PUBLIC_KEY
+        sync: false
+      - key: FLUTTERWAVE_WEBHOOK_HASH
+        sync: false

@@ -1,0 +1,94 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build Kindwell",
+			"type": "shell",
+			"command": "C:\\Program Files\\dotnet\\dotnet.exe",
+			"args": [
+				"build",
+				"--verbosity",
+				"minimal"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Run Kindwell",
+			"type": "shell",
+			"command": "C:\\Program Files\\dotnet\\dotnet.exe",
+			"args": [
+				"run",
+				"--no-build",
+				"--urls",
+				"http://localhost:5080"
+			],
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Stop Kindwell",
+			"type": "shell",
+			"command": "Stop-Process",
+			"args": [
+				"-Id",
+				"16228",
+				"-Force"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run Kindwell Updated",
+			"type": "shell",
+			"command": "C:\\Program Files\\dotnet\\dotnet.exe",
+			"args": [
+				"run",
+				"--no-build",
+				"--urls",
+				"http://localhost:5080"
+			],
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Stop Kindwell Updated",
+			"type": "shell",
+			"command": "Stop-Process",
+			"args": [
+				"-Name",
+				"Kindwell",
+				"-Force"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run Kindwell Final",
+			"type": "shell",
+			"command": "C:\\Program Files\\dotnet\\dotnet.exe",
+			"args": [
+				"run",
+				"--no-build",
+				"--urls",
+				"http://localhost:5080"
+			],
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run Kindwell Admin Test",
+			"type": "shell",
+			"command": "C:\\Program Files\\dotnet\\dotnet.exe",
+			"args": [
+				"run",
+				"--no-build",
+				"--urls",
+				"http://localhost:5081"
+			],
+			"isBackground": true,
+			"problemMatcher": []
+		}
+	]
+}

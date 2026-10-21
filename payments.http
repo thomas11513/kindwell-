@@ -1,0 +1,11 @@
+@baseUrl = http://localhost:5080
+
+### Webhook with a wrong hash (expect 401)
+POST {{baseUrl}}/api/flutterwave/webhook
+Content-Type: application/json
+verif-hash: wrong
+
+{ "event": "charge.completed", "data": { "tx_ref": "kw-example" } }
+
+### Payment status for an unknown reference (expect confirmed:false)
+GET {{baseUrl}}/api/donations/status/kw-example
