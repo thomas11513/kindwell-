@@ -76,6 +76,12 @@ var geoIp = new GeoIpService(
     new HttpClient { Timeout = TimeSpan.FromSeconds(5) },
     app.Logger,
     Environment.GetEnvironmentVariable("GEOIP_API_URL") ?? "https://ipwho.is/{ip}");
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto,
+    KnownNetworks = { },
+    KnownProxies = { }
+});
 app.UseDefaultFiles();
 app.UseStaticFiles();
 app.UseAuthentication();
