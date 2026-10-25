@@ -467,8 +467,8 @@ app.MapPost("/api/auth/reset", async (HttpContext context, IAntiforgery antiforg
 app.MapPost("/api/admin/login", async (HttpContext context, IAntiforgery antiforgery) =>
 {
     if (!await IsValidRequestToken(context, antiforgery)) return Results.BadRequest(new { error = "Please refresh and try again." });
-    var expectedEmail = Environment.GetEnvironmentVariable("ADMIN_EMAIL");
-    var expectedPassword = Environment.GetEnvironmentVariable("ADMIN_PASSWORD");
+    var expectedEmail = builder.Configuration["ADMIN_EMAIL"];
+    var expectedPassword = builder.Configuration["ADMIN_PASSWORD"];
     if (string.IsNullOrWhiteSpace(expectedEmail) || string.IsNullOrWhiteSpace(expectedPassword)) return Results.Problem("Admin access is not configured. Set ADMIN_EMAIL and ADMIN_PASSWORD before signing in.", statusCode: 503);
     using var payload = await JsonDocument.ParseAsync(context.Request.Body);
     var email = payload.RootElement.TryGetProperty("email", out var e) ? e.GetString() ?? "" : "";
