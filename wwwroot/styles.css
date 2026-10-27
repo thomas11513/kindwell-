@@ -341,3 +341,17 @@ h1 { max-width: 570px; margin: 18px 0 17px; font: 400 clamp(44px, 5.2vw, 68px)/1
 
 .auth-divider { display: flex; align-items: center; gap: 12px; margin: 20px 0 4px; color: #8a958d; font-size: 12px; }
 .auth-divider::before, .auth-divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+/* sticky header, horizontal scroll rows, category emoji */
+.site-header { position: sticky; top: 0; z-index: 50; }
+.campaign-grid { display: flex; grid-template-columns: none; gap: 18px; overflow-x: auto; scroll-snap-type: x proximity; padding-bottom: 14px; -webkit-overflow-scrolling: touch; }
+.campaign-grid > .campaign-card { flex: 0 0 300px; max-width: 300px; scroll-snap-align: start; }
+.campaign-grid > .empty-state { flex: 1 0 100%; }
+.category-emoji { display: block; font-size: 34px; line-height: 1; margin-bottom: 12px; }
+@media (max-width: 600px) { .campaign-grid { grid-template-columns: none; } .campaign-grid > .campaign-card { flex-basis: 260px; max-width: 260px; } }
+
+/* wrapping rows: a new row is added as more fundraisers are posted */
+.campaign-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); overflow: visible; scroll-snap-type: none; padding-bottom: 0; }
+.campaign-grid > .campaign-card { flex: none; max-width: none; }
+.campaign-grid > .empty-state { grid-column: 1 / -1; }
+@media (max-width: 600px) { .campaign-grid { grid-template-columns: 1fr; } .campaign-grid > .campaign-card { max-width: none; } }
