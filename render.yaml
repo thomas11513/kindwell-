@@ -15,13 +15,7 @@ services:
         sync: false
       - key: ADMIN_PASSWORD
         sync: false
-      - key: PAYLIO_API_KEY
+      - key: PAYMENTWINGS_SECRET_KEY
         sync: false
-      - key: PAYLIO_WALLET_ADDRESS
-        sync: false
-      - key: FLUTTERWAVE_SECRET_KEY
-        sync: false
-      - key: FLUTTERWAVE_PUBLIC_KEY
-        sync: false
-      - key: FLUTTERWAVE_WEBHOOK_HASH
+      - key: PAYMENTWINGS_WEBHOOK_HASH
         sync: false

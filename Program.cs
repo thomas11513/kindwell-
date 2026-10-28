@@ -52,15 +52,10 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
 });
 builder.Services.AddAuthorization(options => options.AddPolicy("Administrator", policy => policy.RequireRole("Administrator")));
 
-var flutterwaveHttp = new HttpClient { BaseAddress = new Uri("https://api.flutterwave.com/v3/"), Timeout = TimeSpan.FromSeconds(20) };
+var paymentwingsHttp = new HttpClient { BaseAddress = new Uri("https://api.flutterwave.com/v3/"), Timeout = TimeSpan.FromSeconds(20) };
 var app = builder.Build();
 await InitializeDatabase();
-var paylioHttp = new HttpClient { BaseAddress = new Uri("https://paylio.org/api/v1/"), Timeout = TimeSpan.FromSeconds(20) };
-var paylioActive = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PAYLIO_API_KEY"));
-var paylioCurrencies = new HashSet<string>(["USD", "EUR", "CAD", "INR"]);
 IReadOnlyList<string> donationCurrencies = CurrencyRules.ParseAllowed(Environment.GetEnvironmentVariable("DONATION_CURRENCIES"));
-// Paylio can only charge USD, EUR, CAD and INR, so other currencies are not offered while it is the active provider.
-if (paylioActive) donationCurrencies = donationCurrencies.Where(paylioCurrencies.Contains).ToList();
 if (donationCurrencies.Count == 0) donationCurrencies = ["USD"];
 var rateCacheMinutes = int.TryParse(Environment.GetEnvironmentVariable("RATE_CACHE_MINUTES"), out var configuredCache) ? Math.Clamp(configuredCache, 1, 1440) : 60;
 var rateMaxStaleHours = int.TryParse(Environment.GetEnvironmentVariable("RATE_MAX_STALE_HOURS"), out var configuredStale) ? Math.Clamp(configuredStale, 1, 168) : 24;
@@ -871,10 +866,8 @@ admin.MapDelete("/fundraisers/{id:long}", async (long id, HttpContext context, I
 app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery antiforgery, CancellationToken cancellationToken) =>
 {
     if (!await IsValidRequestToken(context, antiforgery)) return Results.BadRequest(new { error = "Please refresh and try again." });
-    var secretKey = Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY");
-    var paylioWallet = Environment.GetEnvironmentVariable("PAYLIO_WALLET_ADDRESS");
-    if (paylioActive ? string.IsNullOrWhiteSpace(paylioWallet) : string.IsNullOrWhiteSpace(secretKey)) return Results.Problem("Secure checkout is not configured yet. Please try again later.", statusCode: 503);
-    secretKey ??= "";
+    var secretKey = Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY") ?? Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY");
+    if (string.IsNullOrWhiteSpace(secretKey)) return Results.Problem("Secure checkout is not configured yet. Please try again later.", statusCode: 503);
     using var payload = await JsonDocument.ParseAsync(context.Request.Body, cancellationToken: cancellationToken);
     var root = payload.RootElement;
     var slug = root.TryGetProperty("slug", out var slugValue) ? slugValue.GetString()?.Trim() : null;
@@ -928,7 +921,7 @@ app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery 
     insert.Parameters.AddWithValue("$rate_at", rates is null ? DBNull.Value : rates.FetchedAt.ToString("O"));
     insert.Parameters.AddWithValue("$rate_source", rates is null ? DBNull.Value : rates.Source);
     insert.Parameters.AddWithValue("$mode", CurrentMode());
-    insert.Parameters.AddWithValue("$provider", paylioActive ? "paylio" : "flutterwave");
+    insert.Parameters.AddWithValue("$provider", "paymentwings");
     insert.Parameters.AddWithValue("$name", donorName.Length == 0 ? "Kind donor" : donorName);
     insert.Parameters.AddWithValue("$anonymous", anonymous ? 1 : 0);
     insert.Parameters.AddWithValue("$tx_ref", txRef);
@@ -936,56 +929,7 @@ app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery 
     insert.Parameters.AddWithValue("$date", DateTimeOffset.UtcNow.ToString("O"));
     var donationId = Convert.ToInt64(await insert.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
 
-    if (paylioActive)
-    {
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Post, "wallet")
-            {
-                Content = JsonContent.Create(new
-                {
-                    address = paylioWallet,
-                    // Paylio rejects non-https callbacks. Over plain-http local development the webhook is unreachable anyway, so the periodic payment re-check confirms the donation instead.
-                    callback = $"{(origin.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? origin : "https://localhost.invalid")}/api/paylio/webhook?ref={txRef}",
-                    amount = (amount / 100m).ToString("0.00", CultureInfo.InvariantCulture),
-                    currency,
-                    email = donorEmail,
-                    note = $"Kindwell {txRef}"
-                })
-            };
-            request.Headers.Add("X-API-Key", Environment.GetEnvironmentVariable("PAYLIO_API_KEY"));
-            using var response = await paylioHttp.SendAsync(request, cancellationToken);
-            using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
-            var root2 = result.RootElement;
-            var paymentId = root2.TryGetProperty("payment_id", out var pid) ? pid.GetString() : null;
-            var ipnToken = root2.TryGetProperty("ipn_token", out var tok) ? tok.GetString() : null;
-            var checkoutUrl = root2.TryGetProperty("checkout_url", out var cu) ? cu.GetString() : null;
-            if (!response.IsSuccessStatusCode || string.IsNullOrWhiteSpace(paymentId) || string.IsNullOrWhiteSpace(ipnToken) || string.IsNullOrWhiteSpace(checkoutUrl))
-            {
-                app.Logger.LogWarning("Paylio rejected checkout for {Currency} (HTTP {Status}).", currency, (int)response.StatusCode);
-                throw new HttpRequestException("Paylio did not return a checkout link.");
-            }
-            await using var save = db.CreateCommand();
-            save.CommandText = "UPDATE donations SET provider_transaction_id=$pid,provider_secret=$secret WHERE id=$id";
-            save.Parameters.AddWithValue("$pid", paymentId);
-            save.Parameters.AddWithValue("$secret", ipnToken);
-            save.Parameters.AddWithValue("$id", donationId);
-            await save.ExecuteNonQueryAsync(cancellationToken);
-            return Results.Ok(new { url = checkoutUrl, txRef, amount = amount / 100m, currency, campaign = title });
-        }
-        catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
-        {
-            await using var markFailed = db.CreateCommand();
-            markFailed.CommandText = "UPDATE donations SET status='failed' WHERE id=$id AND status='pending'";
-            markFailed.Parameters.AddWithValue("$id", donationId);
-            await markFailed.ExecuteNonQueryAsync(CancellationToken.None);
-            return Results.Problem($"We couldn't start secure checkout in {currency}. No payment was taken. Please try again shortly.", statusCode: 502);
-        }
-    }
-
-    // With a Flutterwave public key the card is entered in Flutterwave's secure popup on our own payment screen; otherwise fall back to the hosted page.
-    var publicKey = Environment.GetEnvironmentVariable("FLUTTERWAVE_PUBLIC_KEY");
-    // Kindwell's own card form: the donor never sees a Flutterwave page. The charge is created later with the card details.
+    // Kindwell's own card form: the donor never sees a Paymentwings page. The charge is created later with the card details.
     if (CardFormEnabled())
         return Results.Ok(new { card = true, txRef, amount = amount / 100m, currency, campaign = title });
 
@@ -1005,7 +949,7 @@ app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery 
             })
         };
         request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", secretKey);
-        using var response = await flutterwaveHttp.SendAsync(request, cancellationToken);
+        using var response = await paymentwingsHttp.SendAsync(request, cancellationToken);
         using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
         var link = response.IsSuccessStatusCode
             && result.RootElement.TryGetProperty("status", out var statusValue) && statusValue.GetString() == "success"
@@ -1013,13 +957,10 @@ app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery 
             ? linkValue.GetString() : null;
         if (string.IsNullOrWhiteSpace(link))
         {
-            app.Logger.LogWarning("Flutterwave rejected checkout for {Currency} (HTTP {Status}).", currency, (int)response.StatusCode);
-            throw new HttpRequestException("Flutterwave did not return a checkout link.");
+            app.Logger.LogWarning("Paymentwings rejected checkout for {Currency} (HTTP {Status}).", currency, (int)response.StatusCode);
+            throw new HttpRequestException("Paymentwings did not return a checkout link.");
         }
-        // The hosted link also proves Flutterwave accepts this currency for the account; it is kept as a fallback if the popup can't load.
-        if (!string.IsNullOrWhiteSpace(publicKey))
-            return Results.Ok(new { inline = true, url = link, publicKey, txRef, amount = amount / 100m, currency, email = donorEmail, name = donorName.Length == 0 ? "Kind donor" : donorName, campaign = title });
-        return Results.Ok(new { url = link });
+        return Results.Ok(new { url = link, txRef, amount = amount / 100m, currency, campaign = title });
     }
     catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
     {
@@ -1031,20 +972,19 @@ app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery 
     }
 });
 
-// Card details only pass through memory on their way to Flutterwave's charge API. They are never written to the database, logs or admin views.
+// Card details only pass through memory on their way to Paymentwings' charge API. They are never written to the database, logs or admin views.
 bool CardFormEnabled()
 {
-    if (paylioActive) return false;
-    var secret = Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY");
+    var secret = Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY") ?? Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY");
     if (string.IsNullOrWhiteSpace(secret)) return false;
     return secret.StartsWith("FLWSECK_TEST", StringComparison.Ordinal) || Environment.GetEnvironmentVariable("CARD_FORM_PCI_CONFIRMED") == "true";
 }
 
 string EncryptionKey()
 {
-    var configured = Environment.GetEnvironmentVariable("FLUTTERWAVE_ENCRYPTION_KEY");
+    var configured = Environment.GetEnvironmentVariable("PAYMENTWINGS_ENCRYPTION_KEY") ?? Environment.GetEnvironmentVariable("FLUTTERWAVE_ENCRYPTION_KEY");
     if (!string.IsNullOrWhiteSpace(configured)) return configured.Trim();
-    var secret = Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY") ?? "";
+    var secret = Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY") ?? Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY") ?? "";
     var adjusted = secret.Replace("FLWSECK-", "", StringComparison.Ordinal);
     var md5 = Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(secret))).ToLowerInvariant();
     return adjusted[..Math.Min(12, adjusted.Length)] + md5[^12..];
@@ -1126,14 +1066,14 @@ app.MapPost("/api/donations/charge", async (HttpContext context, IAntiforgery an
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, "charges?type=card") { Content = JsonContent.Create(new { client = Encrypt3Des(JsonSerializer.Serialize(chargeBody)) }) };
-            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY"));
-            using var response = await flutterwaveHttp.SendAsync(request, cancellationToken);
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY") ?? Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY"));
+            using var response = await paymentwingsHttp.SendAsync(request, cancellationToken);
             using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
             return Results.Ok(ChargeOutcome(result.RootElement, txRef));
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
         {
-            app.Logger.LogWarning("Flutterwave card charge could not be completed ({Type}).", ex.GetType().Name);
+            app.Logger.LogWarning("Paymentwings card charge could not be completed ({Type}).", ex.GetType().Name);
             return Results.Problem("We couldn't reach the payment network. You were not charged. Please try again.", statusCode: 502);
         }
     }
@@ -1153,8 +1093,8 @@ app.MapPost("/api/donations/charge/validate", async (HttpContext context, IAntif
     try
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "validate-charge") { Content = JsonContent.Create(new { otp, flw_ref = flwRef, type = "card" }) };
-        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY"));
-        using var response = await flutterwaveHttp.SendAsync(request, cancellationToken);
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY") ?? Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY"));
+        using var response = await paymentwingsHttp.SendAsync(request, cancellationToken);
         using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
         return Results.Ok(ChargeOutcome(result.RootElement, txRef));
     }
@@ -1191,19 +1131,19 @@ object ChargeOutcome(JsonElement body, string txRef)
     return new { step = "verify", flwRef };
 }
 
-app.MapPost("/api/flutterwave/webhook", async (HttpRequest request, CancellationToken cancellationToken) =>
+app.MapPost("/api/paymentwings/webhook", async (HttpRequest request, CancellationToken cancellationToken) =>
 {
-    var expectedHash = Environment.GetEnvironmentVariable("FLUTTERWAVE_WEBHOOK_HASH");
+    var expectedHash = Environment.GetEnvironmentVariable("PAYMENTWINGS_WEBHOOK_HASH") ?? Environment.GetEnvironmentVariable("FLUTTERWAVE_WEBHOOK_HASH");
     if (string.IsNullOrWhiteSpace(expectedHash)) return Results.Problem("Webhook is not configured.", statusCode: 503);
     if (request.ContentLength > 65_536) return Results.BadRequest();
     string rawBody;
     using (var bodyReader = new StreamReader(request.Body, Encoding.UTF8, false, 4096, true)) rawBody = await bodyReader.ReadToEndAsync(cancellationToken);
     if (rawBody.Length > 65_536) return Results.BadRequest();
-    // Flutterwave v3 sends the dashboard secret hash in `verif-hash`; the newer `flutterwave-signature` is a base64 HMAC-SHA256 of the raw body keyed with that hash. Either proves origin.
+    // Paymentwings sends the dashboard secret hash in `verif-hash`; the newer `flutterwave-signature` is a base64 HMAC-SHA256 of the raw body keyed with that hash. Either proves origin.
     var signature = request.Headers["flutterwave-signature"].ToString();
     var expectedSignature = Convert.ToBase64String(HMACSHA256.HashData(Encoding.UTF8.GetBytes(expectedHash), Encoding.UTF8.GetBytes(rawBody)));
     var authentic = SecureEquals(request.Headers["verif-hash"].ToString(), expectedHash) || (signature.Length > 0 && SecureEquals(signature, expectedSignature));
-    if (!authentic) { app.Logger.LogWarning("Rejected Flutterwave webhook with an invalid signature."); return Results.Unauthorized(); }
+    if (!authentic) { app.Logger.LogWarning("Rejected Paymentwings webhook with an invalid signature."); return Results.Unauthorized(); }
     string? txRef;
     try
     {
@@ -1213,44 +1153,15 @@ app.MapPost("/api/flutterwave/webhook", async (HttpRequest request, Cancellation
     }
     catch (JsonException) { return Results.BadRequest(); }
     if (string.IsNullOrWhiteSpace(txRef) || txRef.Length > 100) return Results.Ok();
-    // The payload is never trusted: payment details are re-fetched from Flutterwave before anything is recorded.
-    var outcome = await ConfirmFlutterwavePayment(txRef, cancellationToken);
-    return outcome == "unverified" ? Results.StatusCode(StatusCodes.Status503ServiceUnavailable) : Results.Ok();
-});
-
-app.MapPost("/api/paylio/webhook", async (HttpRequest request, CancellationToken cancellationToken) =>
-{
-    var txRef = request.Query["ref"].ToString();
-    if (txRef.Length is 0 or > 100 || !txRef.StartsWith("kw-", StringComparison.Ordinal)) return Results.BadRequest();
-    if (request.ContentLength > 65_536) return Results.BadRequest();
-    string rawBody;
-    using (var bodyReader = new StreamReader(request.Body, Encoding.UTF8, false, 4096, true)) rawBody = await bodyReader.ReadToEndAsync(cancellationToken);
-    if (rawBody.Length > 65_536) return Results.BadRequest();
-    string? secret;
-    await using (var db = await OpenDatabase(cancellationToken))
-    {
-        await using var lookup = db.CreateCommand();
-        lookup.CommandText = "SELECT provider_secret FROM donations WHERE provider='paylio' AND provider_session_id=$ref";
-        lookup.Parameters.AddWithValue("$ref", txRef);
-        secret = await lookup.ExecuteScalarAsync(cancellationToken) as string;
-    }
-    if (string.IsNullOrWhiteSpace(secret)) return Results.NotFound();
-    // X-PayLio-Signature is the hex HMAC-SHA256 of the raw body, keyed with the payment's ipn_token.
-    var expected = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(secret), Encoding.UTF8.GetBytes(rawBody))).ToLowerInvariant();
-    if (!SecureEquals(request.Headers["X-PayLio-Signature"].ToString().Trim().ToLowerInvariant(), expected))
-    {
-        app.Logger.LogWarning("Rejected Paylio webhook with an invalid signature.");
-        return Results.Unauthorized();
-    }
-    // The payload is never trusted: the payment is re-fetched from Paylio before anything is recorded.
-    var outcome = await ConfirmFlutterwavePayment(txRef, cancellationToken);
+    // The payload is never trusted: payment details are re-fetched from Paymentwings before anything is recorded.
+    var outcome = await ConfirmPaymentwingsPayment(txRef, cancellationToken);
     return outcome == "unverified" ? Results.StatusCode(StatusCodes.Status503ServiceUnavailable) : Results.Ok();
 });
 
 app.MapGet("/api/donations/status/{txRef}", async (string txRef, CancellationToken cancellationToken) =>
 {
     if (txRef.Length > 100 || !txRef.StartsWith("kw-", StringComparison.Ordinal)) return Results.NotFound();
-    var outcome = await ConfirmFlutterwavePayment(txRef, cancellationToken);
+    var outcome = await ConfirmPaymentwingsPayment(txRef, cancellationToken);
     if (outcome != "succeeded") return Results.Ok(new { confirmed = false, failed = outcome == "failed" });
     await using var db = await OpenDatabase(cancellationToken);
     await using var command = db.CreateCommand();
@@ -1352,7 +1263,7 @@ admin.MapGet("/finance", async (string? mode, CancellationToken cancellationToke
     {
         mode = scope.Filter ?? "all",
         configuredMode = CurrentMode(),
-        note = "usdEquivalent values are estimates: the donor's currency amount multiplied by the exchange rate recorded when checkout started. They are not money converted or received in USD. Settlement figures are what Flutterwave reported for each transaction.",
+        note = "usdEquivalent values are estimates: the donor's currency amount multiplied by the exchange rate recorded when checkout started. They are not money converted or received in USD. Settlement figures are what Paymentwings reported for each transaction.",
         lifetime = new { usdEquivalent = Number(lifetime[0]), count = Number(lifetime[1]) },
         today = new { usdEquivalent = Number(today[0]), count = Number(today[1]) },
         last7Days = new { usdEquivalent = Number(week[0]), count = Number(week[1]) },
@@ -1373,7 +1284,7 @@ admin.MapGet("/finance", async (string? mode, CancellationToken cancellationToke
         currencyConversion = new
         {
             enabled = false,
-            explanation = "Kindwell only records USD equivalents. It never converts or trades funds. Settlement currency and any conversion are governed by your Flutterwave account settings; ask Flutterwave to enable the settlement currency you need."
+            explanation = "Kindwell only records USD equivalents. It never converts or trades funds. Settlement currency and any conversion are governed by your Paymentwings account settings; ask Paymentwings to enable the settlement currency you need."
         }
     });
 });
@@ -1401,7 +1312,7 @@ admin.MapGet("/finance/export.csv", async (string? q, string? status, string? cu
         return value.Contains(',') || value.Contains('"') || value.Contains('\n') ? $"\"{value.Replace("\"", "\"\"")}\"" : value;
     }
     string Major(long? minor) => minor is null ? "" : (minor.Value / 100m).ToString("0.00", CultureInfo.InvariantCulture);
-    var csv = new StringBuilder("date_utc,reference,flutterwave_id,mode,status,campaign,donor,original_amount,original_currency,exchange_rate_units_per_usd,rate_recorded_at,usd_equivalent_estimate,charged_amount,charged_currency,provider_fee,settled_amount,settlement_currency,donor_email\r\n");
+    var csv = new StringBuilder("date_utc,reference,paymentwings_id,mode,status,campaign,donor,original_amount,original_currency,exchange_rate_units_per_usd,rate_recorded_at,usd_equivalent_estimate,charged_amount,charged_currency,provider_fee,settled_amount,settlement_currency,donor_email\r\n");
     foreach (var row in result.Rows)
         csv.Append(string.Join(',', new[]
         {
@@ -1413,31 +1324,6 @@ admin.MapGet("/finance/export.csv", async (string? q, string? status, string? cu
 });
 
 app.MapFallbackToFile("index.html");
-if (paylioActive)
-{
-    // Paylio sends each webhook once, so open payments from the last day are re-checked every two minutes.
-    _ = Task.Run(async () =>
-    {
-        while (true)
-        {
-            try
-            {
-                await Task.Delay(TimeSpan.FromMinutes(2));
-                var open = new List<string>();
-                await using (var db = await OpenDatabase(CancellationToken.None))
-                {
-                    await using var query = db.CreateCommand();
-                    query.CommandText = "SELECT provider_session_id FROM donations WHERE provider='paylio' AND status='pending' AND provider_transaction_id IS NOT NULL AND created_at>=$since LIMIT 50";
-                    query.Parameters.AddWithValue("$since", DateTimeOffset.UtcNow.AddDays(-1).ToString("O"));
-                    await using var reader = await query.ExecuteReaderAsync();
-                    while (await reader.ReadAsync()) open.Add(reader.GetString(0));
-                }
-                foreach (var reference in open) await ConfirmFlutterwavePayment(reference, CancellationToken.None);
-            }
-            catch (Exception ex) { app.Logger.LogWarning(ex, "Paylio reconciliation run failed."); }
-        }
-    });
-}
 
 app.Run();
 
@@ -1486,7 +1372,7 @@ async Task InitializeDatabase()
     }
     foreach (var (column, definition) in new[]
     {
-        ("provider", "TEXT NOT NULL DEFAULT 'flutterwave'"), ("provider_transaction_id", "TEXT"),
+        ("provider", "TEXT NOT NULL DEFAULT 'paymentwings'"), ("provider_transaction_id", "TEXT"),
         ("currency", "TEXT NOT NULL DEFAULT 'USD'"), ("original_amount_minor", "INTEGER"), ("exchange_rate", "TEXT"),
         ("rate_fetched_at", "TEXT"), ("rate_source", "TEXT"), ("provider_mode", "TEXT"),
         ("charged_amount_minor", "INTEGER"), ("charged_currency", "TEXT"), ("provider_fee_minor", "INTEGER"),
@@ -1655,9 +1541,7 @@ async Task InitializeDatabase()
 
 string CurrentMode()
 {
-    // Paylio has no sandbox: every payment is real.
-    if (paylioActive) return "live";
-    var key = Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY");
+    var key = Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY") ?? Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY");
     return string.IsNullOrWhiteSpace(key) || key.StartsWith("FLWSECK_TEST", StringComparison.Ordinal) ? "test" : "live";
 }
 
@@ -1735,17 +1619,16 @@ bool IsValidEmail(string value)
     catch (FormatException) { return false; }
 }
 
-// Returns "succeeded", "failed", "pending" or "unverified" (could not be checked with Flutterwave).
-async Task<string> ConfirmFlutterwavePayment(string txRef, CancellationToken cancellationToken)
+// Returns "succeeded", "failed", "pending" or "unverified" (could not be checked with Paymentwings).
+async Task<string> ConfirmPaymentwingsPayment(string txRef, CancellationToken cancellationToken)
 {
-    var secretKey = Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY") ?? "";
+    var secretKey = Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY") ?? Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY") ?? "";
     await using var db = await OpenDatabase(cancellationToken);
     await using var getDonation = db.CreateCommand();
-    getDonation.CommandText = "SELECT id,fundraiser_id,amount,status,currency,COALESCE(original_amount_minor,amount),provider,provider_transaction_id FROM donations WHERE provider_session_id=$tx_ref";
+    getDonation.CommandText = "SELECT id,fundraiser_id,amount,status,currency,COALESCE(original_amount_minor,amount) FROM donations WHERE provider_session_id=$tx_ref";
     getDonation.Parameters.AddWithValue("$tx_ref", txRef);
     long donationId, fundraiserId, amount, originalMinor;
-    string status, donationCurrency, provider;
-    string? paylioPaymentId;
+    string status, donationCurrency;
     await using (var donationReader = await getDonation.ExecuteReaderAsync(cancellationToken))
     {
         if (!await donationReader.ReadAsync(cancellationToken)) return "unknown";
@@ -1755,8 +1638,6 @@ async Task<string> ConfirmFlutterwavePayment(string txRef, CancellationToken can
         status = donationReader.GetString(3);
         donationCurrency = donationReader.GetString(4);
         originalMinor = donationReader.GetInt64(5);
-        provider = donationReader.GetString(6);
-        paylioPaymentId = donationReader.IsDBNull(7) ? null : donationReader.GetString(7);
     }
     if (status is "succeeded" or "failed") return status;
 
@@ -1764,44 +1645,12 @@ async Task<string> ConfirmFlutterwavePayment(string txRef, CancellationToken can
     decimal verifiedAmount;
     string? verifiedId, settlementCurrency;
     long? chargedMinor, feeMinor, settledMinor;
-    if (provider == "paylio")
-    {
-        var apiKey = Environment.GetEnvironmentVariable("PAYLIO_API_KEY");
-        if (string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(paylioPaymentId)) return "unverified";
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"payment-status?payment_id={Uri.EscapeDataString(paylioPaymentId)}");
-            request.Headers.Add("X-API-Key", apiKey);
-            using var response = await paylioHttp.SendAsync(request, cancellationToken);
-            if (!response.IsSuccessStatusCode) return response.StatusCode == System.Net.HttpStatusCode.NotFound ? "pending" : "unverified";
-            using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
-            var data = result.RootElement;
-            string? Text(string name) => data.TryGetProperty(name, out var v) && v.ValueKind != JsonValueKind.Null ? v.ToString() : null;
-            decimal? Money(string name) => decimal.TryParse(Text(name), NumberStyles.Number, CultureInfo.InvariantCulture, out var m) ? m : null;
-            var remoteStatus = Text("status") ?? "";
-            verifiedRef = Text("payment_id") ?? "";
-            verifiedStatus = remoteStatus.Equals("paid", StringComparison.OrdinalIgnoreCase) ? "successful" : remoteStatus.ToLowerInvariant() is "failed" or "canceled" or "cancelled" ? "failed" : "pending";
-            verifiedCurrency = Text("currency") ?? "";
-            // The requested amount is compared; `amount` only differs when fees are passed to the donor, which Kindwell does not do.
-            verifiedAmount = Money("original_amount") ?? Money("amount") ?? -1;
-            verifiedId = verifiedRef;
-            chargedMinor = Money("amount") is { } charged ? DonationMoney.ToMinor(charged) : null;
-            feeMinor = null;
-            settledMinor = Money("forwarded_amount") is { } forwarded ? DonationMoney.ToMinor(forwarded) : null;
-            settlementCurrency = settledMinor is null ? null : "USDC";
-        }
-        catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException) { app.Logger.LogWarning(ex, "Could not verify Paylio payment for {TxRef}.", txRef); return "unverified"; }
-        if (verifiedRef != paylioPaymentId) return "unverified";
-        verifiedRef = txRef;
-    }
-    else
-    {
     if (string.IsNullOrWhiteSpace(secretKey)) return "unverified";
     try
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, $"transactions/verify_by_reference?tx_ref={Uri.EscapeDataString(txRef)}");
         request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", secretKey);
-        using var response = await flutterwaveHttp.SendAsync(request, cancellationToken);
+        using var response = await paymentwingsHttp.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode) return response.StatusCode == System.Net.HttpStatusCode.NotFound ? "pending" : "unverified";
         using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
         if (!result.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object) return "pending";
@@ -1816,8 +1665,7 @@ async Task<string> ConfirmFlutterwavePayment(string txRef, CancellationToken can
         settledMinor = OptionalMinor("amount_settled");
         settlementCurrency = data.TryGetProperty("settlement_currency", out var sc) && sc.ValueKind == JsonValueKind.String && sc.GetString() is { Length: 3 } code ? code.ToUpperInvariant() : null;
     }
-    catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException) { app.Logger.LogWarning(ex, "Could not verify Flutterwave transaction {TxRef}.", txRef); return "unverified"; }
-    }
+    catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException) { app.Logger.LogWarning(ex, "Could not verify Paymentwings transaction {TxRef}.", txRef); return "unverified"; }
 
     if (verifiedRef != txRef) return "unverified";
     if (verifiedStatus.Equals("failed", StringComparison.OrdinalIgnoreCase) || verifiedStatus.Equals("cancelled", StringComparison.OrdinalIgnoreCase))
@@ -1831,7 +1679,7 @@ async Task<string> ConfirmFlutterwavePayment(string txRef, CancellationToken can
     if (!verifiedStatus.Equals("successful", StringComparison.OrdinalIgnoreCase)) return "pending";
     if (!verifiedCurrency.Equals(donationCurrency, StringComparison.OrdinalIgnoreCase) || DonationMoney.ToMinor(verifiedAmount) != originalMinor)
     {
-        app.Logger.LogWarning("Flutterwave transaction {TxRef} did not match the expected amount or currency; not recorded.", txRef);
+        app.Logger.LogWarning("Paymentwings transaction {TxRef} did not match the expected amount or currency; not recorded.", txRef);
         return "unverified";
     }
 
