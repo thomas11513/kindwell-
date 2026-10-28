@@ -98,7 +98,7 @@ app.MapGet("/api/fundraisers", async () =>
 {
     await using var db = await OpenDatabase();
     await using var command = db.CreateCommand();
-    command.CommandText = "SELECT slug,title,summary,story,image_url,goal,raised+reported_raised,donation_count,reported_raised,reported_donation_count,category FROM fundraisers WHERE published=1 ORDER BY featured DESC, created_at DESC";
+    command.CommandText = "SELECT slug,title,summary,story,image_url,goal,raised+reported_raised,donation_count,reported_raised,reported_donation_count,category,organizer_name,organizer_location,organizer_profile_image,organizer_bio FROM fundraisers WHERE published=1 ORDER BY featured DESC, created_at DESC";
     await using var reader = await command.ExecuteReaderAsync();
     var campaigns = new List<object>();
     while (await reader.ReadAsync()) campaigns.Add(ReadFundraiser(reader));
@@ -133,7 +133,7 @@ app.MapGet("/api/fundraisers/search", async (string? q, string? category, string
         SELECT COUNT(*) FROM fundraisers
         WHERE published=1
           AND ($category IS NULL OR category=$category)
-          AND ($search='' OR title LIKE $pattern ESCAPE '\' OR summary LIKE $pattern ESCAPE '\' OR story LIKE $pattern ESCAPE '\' OR category LIKE $pattern ESCAPE '\')
+          AND ($search='' OR title LIKE $pattern ESCAPE '\' OR summary LIKE $pattern ESCAPE '\' OR story LIKE $pattern ESCAPE '\' OR category LIKE $pattern ESCAPE '\' OR organizer_name LIKE $pattern ESCAPE '\' OR organizer_location LIKE $pattern ESCAPE '\')
         """;
     countCommand.Parameters.AddWithValue("$category", string.IsNullOrWhiteSpace(category) ? DBNull.Value : category);
     countCommand.Parameters.AddWithValue("$search", search);
@@ -144,11 +144,11 @@ app.MapGet("/api/fundraisers/search", async (string? q, string? category, string
 
     await using var command = db.CreateCommand();
     command.CommandText = $"""
-        SELECT slug,title,summary,story,image_url,goal,raised+reported_raised,donation_count+reported_donation_count,reported_raised,reported_donation_count,category
+        SELECT slug,title,summary,story,image_url,goal,raised+reported_raised,donation_count+reported_donation_count,reported_raised,reported_donation_count,category,organizer_name,organizer_location,organizer_profile_image,organizer_bio
         FROM fundraisers
         WHERE published=1
           AND ($category IS NULL OR category=$category)
-          AND ($search='' OR title LIKE $pattern ESCAPE '\' OR summary LIKE $pattern ESCAPE '\' OR story LIKE $pattern ESCAPE '\' OR category LIKE $pattern ESCAPE '\')
+          AND ($search='' OR title LIKE $pattern ESCAPE '\' OR summary LIKE $pattern ESCAPE '\' OR story LIKE $pattern ESCAPE '\' OR category LIKE $pattern ESCAPE '\' OR organizer_name LIKE $pattern ESCAPE '\' OR organizer_location LIKE $pattern ESCAPE '\')
         ORDER BY {orderBy}
         LIMIT $limit OFFSET $offset
         """;
@@ -167,11 +167,11 @@ app.MapGet("/api/fundraisers/{slug}", async (string slug) =>
 {
     await using var db = await OpenDatabase();
     await using var command = db.CreateCommand();
-    command.CommandText = "SELECT id,slug,title,summary,story,image_url,goal,raised+reported_raised,donation_count,raised,reported_raised,reported_donation_count,category FROM fundraisers WHERE slug=$slug AND published=1";
+    command.CommandText = "SELECT id,slug,title,summary,story,image_url,goal,raised+reported_raised,donation_count,raised,reported_raised,reported_donation_count,category,organizer_name,organizer_location,organizer_profile_image,organizer_bio FROM fundraisers WHERE slug=$slug AND published=1";
     command.Parameters.AddWithValue("$slug", slug);
     await using var reader = await command.ExecuteReaderAsync();
     if (!await reader.ReadAsync()) return Results.NotFound(new { error = "This fundraiser could not be found." });
-    var campaign = new { id = reader.GetInt64(0), slug = reader.GetString(1), title = reader.GetString(2), summary = reader.GetString(3), story = reader.GetString(4), image = reader.GetString(5), goal = reader.GetInt64(6), raised = reader.GetInt64(7), donations = reader.GetInt64(8), verifiedRaised = reader.GetInt64(9), reportedRaised = reader.GetInt64(10), reportedDonations = reader.GetInt64(11), category = reader.GetString(12) };
+    var campaign = new { id = reader.GetInt64(0), slug = reader.GetString(1), title = reader.GetString(2), summary = reader.GetString(3), story = reader.GetString(4), image = reader.GetString(5), goal = reader.GetInt64(6), raised = reader.GetInt64(7), donations = reader.GetInt64(8), verifiedRaised = reader.GetInt64(9), reportedRaised = reader.GetInt64(10), reportedDonations = reader.GetInt64(11), category = reader.GetString(12), organizerName = reader.GetString(13), organizerLocation = reader.GetString(14), organizerProfileImage = reader.GetString(15), organizerBio = reader.GetString(16) };
     await reader.CloseAsync();
     command.CommandText = "SELECT donor_name,is_anonymous,amount,created_at FROM donations WHERE fundraiser_id=$id AND status='succeeded' ORDER BY created_at DESC LIMIT 8";
     command.Parameters.Clear();
@@ -185,6 +185,79 @@ app.MapGet("/api/fundraisers/{slug}", async (string slug) =>
     var updates = new List<object>();
     while (await updatesReader.ReadAsync()) updates.Add(new { title = updatesReader.GetString(0), body = updatesReader.GetString(1), date = updatesReader.GetString(2) });
     return Results.Ok(new { campaign, recentDonations = donations, updates });
+});
+
+app.MapGet("/api/people/search", async (string? q, int page = 1, int pageSize = 12) =>
+{
+    var search = q?.Trim() ?? "";
+    if (search.Length > 120) return Results.BadRequest(new { error = "Search text must be 120 characters or fewer." });
+    page = Math.Max(page, 1);
+    pageSize = Math.Clamp(pageSize, 1, 24);
+    var escaped = search.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("%", "\\%", StringComparison.Ordinal).Replace("_", "\\_", StringComparison.Ordinal);
+    var pattern = $"%{escaped}%";
+    await using var db = await OpenDatabase();
+    await using var command = db.CreateCommand();
+    command.CommandText = """
+        SELECT organizer_name,organizer_location,organizer_profile_image,organizer_bio
+        FROM fundraisers
+        WHERE published=1
+          AND organizer_name <> ''
+          AND ($search='' OR organizer_name LIKE $pattern ESCAPE '\' OR organizer_location LIKE $pattern ESCAPE '\')
+        GROUP BY organizer_name,organizer_location,organizer_profile_image,organizer_bio
+        ORDER BY organizer_name COLLATE NOCASE ASC
+        LIMIT $limit OFFSET $offset
+        """;
+    command.Parameters.AddWithValue("$search", search);
+    command.Parameters.AddWithValue("$pattern", pattern);
+    command.Parameters.AddWithValue("$limit", pageSize);
+    command.Parameters.AddWithValue("$offset", (page - 1) * pageSize);
+    await using var reader = await command.ExecuteReaderAsync();
+    var items = new List<object>();
+    while (await reader.ReadAsync())
+    {
+        var name = reader.GetString(0);
+        items.Add(new
+        {
+            name,
+            slug = Slugify(name),
+            location = reader.GetString(1),
+            profileImage = reader.GetString(2),
+            bio = reader.GetString(3)
+        });
+    }
+    return Results.Ok(new { items, page, pageSize, total = items.Count, pages = Math.Max(1, (int)Math.Ceiling(items.Count / (double)pageSize)) });
+});
+
+app.MapGet("/api/people/{slug}", async (string slug) =>
+{
+    await using var db = await OpenDatabase();
+    await using var command = db.CreateCommand();
+    command.CommandText = "SELECT slug,title,summary,story,image_url,goal,raised+reported_raised,donation_count+reported_donation_count,reported_raised,reported_donation_count,category,organizer_name,organizer_location,organizer_profile_image,organizer_bio FROM fundraisers WHERE published=1 ORDER BY created_at DESC";
+    await using var reader = await command.ExecuteReaderAsync();
+    var matches = new List<object>();
+    object? profile = null;
+    while (await reader.ReadAsync())
+    {
+        var name = reader.IsDBNull(11) ? "" : reader.GetString(11);
+        if (string.IsNullOrWhiteSpace(name)) continue;
+        if (Slugify(name).Equals(slug, StringComparison.OrdinalIgnoreCase))
+        {
+            if (profile is null)
+            {
+                profile = new
+                {
+                    name,
+                    slug = Slugify(name),
+                    location = reader.GetString(12),
+                    profileImage = reader.GetString(13),
+                    bio = reader.GetString(14)
+                };
+            }
+            matches.Add(ReadFundraiser(reader));
+        }
+    }
+    if (profile is null) return Results.NotFound(new { error = "This profile could not be found." });
+    return Results.Ok(new { profile, fundraisers = matches });
 });
 
 var oauthStates = new System.Collections.Concurrent.ConcurrentDictionary<string, (string Provider, DateTimeOffset Expires)>();
@@ -595,10 +668,10 @@ admin.MapGet("/fundraisers", async () =>
 {
     await using var db = await OpenDatabase();
     await using var command = db.CreateCommand();
-    command.CommandText = "SELECT id,slug,title,summary,story,image_url,goal,raised+reported_raised,donation_count+reported_donation_count,published,featured,reported_raised,reported_donation_count,category FROM fundraisers ORDER BY created_at DESC";
+    command.CommandText = "SELECT id,slug,title,summary,story,image_url,goal,raised+reported_raised,donation_count+reported_donation_count,published,featured,reported_raised,reported_donation_count,category,organizer_name,organizer_location,organizer_profile_image,organizer_bio FROM fundraisers ORDER BY created_at DESC";
     await using var reader = await command.ExecuteReaderAsync();
     var campaigns = new List<object>();
-    while (await reader.ReadAsync()) campaigns.Add(new { id = reader.GetInt64(0), slug = reader.GetString(1), title = reader.GetString(2), summary = reader.GetString(3), story = reader.GetString(4), image = reader.GetString(5), goal = reader.GetInt64(6), raised = reader.GetInt64(7), donations = reader.GetInt64(8), published = reader.GetInt64(9) == 1, featured = reader.GetInt64(10) == 1, reportedRaised = reader.GetInt64(11), reportedDonations = reader.GetInt64(12), category = reader.GetString(13) });
+    while (await reader.ReadAsync()) campaigns.Add(new { id = reader.GetInt64(0), slug = reader.GetString(1), title = reader.GetString(2), summary = reader.GetString(3), story = reader.GetString(4), image = reader.GetString(5), goal = reader.GetInt64(6), raised = reader.GetInt64(7), donations = reader.GetInt64(8), published = reader.GetInt64(9) == 1, featured = reader.GetInt64(10) == 1, reportedRaised = reader.GetInt64(11), reportedDonations = reader.GetInt64(12), category = reader.GetString(13), organizerName = reader.GetString(14), organizerLocation = reader.GetString(15), organizerProfileImage = reader.GetString(16), organizerBio = reader.GetString(17) });
     return Results.Ok(campaigns);
 });
 admin.MapGet("/donations", async (string? status, string? from, string? to, int page = 1, int pageSize = 50, CancellationToken cancellationToken = default) =>
@@ -759,7 +832,7 @@ admin.MapPost("/fundraisers", async (HttpContext context, IAntiforgery antiforge
     var slug = Slugify(input!.Title);
     await using var db = await OpenDatabase();
     await using var command = db.CreateCommand();
-    command.CommandText = "INSERT INTO fundraisers(slug,title,summary,story,image_url,goal,reported_raised,reported_donation_count,published,featured,created_at,category) VALUES($slug,$title,$summary,$story,$image,$goal,$reported_raised,$reported_donation_count,$published,$featured,$created,$category)";
+    command.CommandText = "INSERT INTO fundraisers(slug,title,summary,story,image_url,goal,reported_raised,reported_donation_count,published,featured,created_at,category,organizer_name,organizer_location,organizer_profile_image,organizer_bio) VALUES($slug,$title,$summary,$story,$image,$goal,$reported_raised,$reported_donation_count,$published,$featured,$created,$category,$organizer_name,$organizer_location,$organizer_profile_image,$organizer_bio)";
     AddFundraiserParameters(command, input, slug);
     command.Parameters.AddWithValue("$created", DateTimeOffset.UtcNow.ToString("O"));
     try { await command.ExecuteNonQueryAsync(); }
@@ -774,7 +847,7 @@ admin.MapPut("/fundraisers/{id:long}", async (long id, HttpContext context, IAnt
     if (error is not null) return Results.BadRequest(new { error });
     await using var db = await OpenDatabase();
     await using var command = db.CreateCommand();
-    command.CommandText = "UPDATE fundraisers SET title=$title,summary=$summary,story=$story,image_url=$image,goal=$goal,reported_raised=$reported_raised,reported_donation_count=$reported_donation_count,published=$published,featured=$featured,category=$category WHERE id=$id";
+    command.CommandText = "UPDATE fundraisers SET title=$title,summary=$summary,story=$story,image_url=$image,goal=$goal,reported_raised=$reported_raised,reported_donation_count=$reported_donation_count,published=$published,featured=$featured,category=$category,organizer_name=$organizer_name,organizer_location=$organizer_location,organizer_profile_image=$organizer_profile_image,organizer_bio=$organizer_bio WHERE id=$id";
     AddFundraiserParameters(command, input!, Slugify(input!.Title));
     command.Parameters.AddWithValue("$id", id);
     if (await command.ExecuteNonQueryAsync() == 0) return Results.NotFound();
@@ -1382,7 +1455,7 @@ async Task InitializeDatabase()
     command.CommandText = """
         PRAGMA foreign_keys=ON;
         CREATE TABLE IF NOT EXISTS schema_migrations(migration_id TEXT PRIMARY KEY,applied_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS fundraisers(id INTEGER PRIMARY KEY AUTOINCREMENT,slug TEXT NOT NULL UNIQUE,title TEXT NOT NULL,summary TEXT NOT NULL,story TEXT NOT NULL,image_url TEXT NOT NULL,goal INTEGER NOT NULL,raised INTEGER NOT NULL DEFAULT 0,donation_count INTEGER NOT NULL DEFAULT 0,reported_raised INTEGER NOT NULL DEFAULT 0,reported_donation_count INTEGER NOT NULL DEFAULT 0,published INTEGER NOT NULL DEFAULT 0,featured INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,category TEXT NOT NULL DEFAULT 'Community');
+        CREATE TABLE IF NOT EXISTS fundraisers(id INTEGER PRIMARY KEY AUTOINCREMENT,slug TEXT NOT NULL UNIQUE,title TEXT NOT NULL,summary TEXT NOT NULL,story TEXT NOT NULL,image_url TEXT NOT NULL,goal INTEGER NOT NULL,raised INTEGER NOT NULL DEFAULT 0,donation_count INTEGER NOT NULL DEFAULT 0,reported_raised INTEGER NOT NULL DEFAULT 0,reported_donation_count INTEGER NOT NULL DEFAULT 0,published INTEGER NOT NULL DEFAULT 0,featured INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,category TEXT NOT NULL DEFAULT 'Community',organizer_name TEXT NOT NULL DEFAULT '',organizer_location TEXT NOT NULL DEFAULT '',organizer_profile_image TEXT NOT NULL DEFAULT '',organizer_bio TEXT NOT NULL DEFAULT '');
         CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT NOT NULL UNIQUE,name TEXT NOT NULL,password_hash TEXT NOT NULL,created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS password_resets(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,token_hash TEXT NOT NULL UNIQUE,expires_at TEXT NOT NULL,used INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS start_requests(id INTEGER PRIMARY KEY AUTOINCREMENT,category TEXT NOT NULL,beneficiary TEXT NOT NULL,reason TEXT NOT NULL,goal_usd INTEGER NOT NULL,timeline TEXT NOT NULL,name TEXT NOT NULL,email TEXT NOT NULL,created_at TEXT NOT NULL);
@@ -1473,6 +1546,19 @@ async Task InitializeDatabase()
         addColumn.CommandText = "ALTER TABLE fundraisers ADD COLUMN category TEXT NOT NULL DEFAULT 'Community'";
         await addColumn.ExecuteNonQueryAsync();
     }
+    foreach (var (column, definition) in new[]
+    {
+        ("organizer_name", "TEXT NOT NULL DEFAULT ''"),
+        ("organizer_location", "TEXT NOT NULL DEFAULT ''"),
+        ("organizer_profile_image", "TEXT NOT NULL DEFAULT ''"),
+        ("organizer_bio", "TEXT NOT NULL DEFAULT ''")
+    })
+    {
+        if (columns.Contains(column)) continue;
+        await using var addColumn = db.CreateCommand();
+        addColumn.CommandText = $"ALTER TABLE fundraisers ADD COLUMN {column} {definition}";
+        await addColumn.ExecuteNonQueryAsync();
+    }
     await using (var categoryMigration = await db.BeginTransactionAsync())
     {
         await using var migrationCheck = db.CreateCommand();
@@ -1540,10 +1626,17 @@ async Task InitializeDatabase()
         new SeedCampaign("Keeping the neighborhood garden growing", "A little patch of green with room for everyone", "For eight years, the Maple Street garden has brought neighbors together. This season we are raising funds for accessible paths, new soil, and a water-saving irrigation system so the garden can welcome even more families.", "https://images.unsplash.com/photo-1416879595882-3373a0480b5b?auto=format&fit=crop&w=1000&q=82", 950000, "Environment"),
         new SeedCampaign("A safe ride to every appointment", "Reliable transport makes recovery possible", "Getting to regular treatment should not be another worry. This community fund will help cover accessible rides for local residents attending ongoing medical appointments, with funds distributed through the care team.", "https://images.unsplash.com/photo-1576091160399-112ba8d25d1d?auto=format&fit=crop&w=1000&q=82", 2400000, "Medical")
     };
+    var organizerProfiles = new Dictionary<string, (string location, string image, string bio)>
+    {
+        ["A brighter start for Maya"] = ("Lagos, Nigeria", "https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=500&q=80", "Helping my family rebuild after a sudden fire with practical support and a safe place to restart."),
+        ["Keeping the neighborhood garden growing"] = ("Austin, Texas", "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=500&q=80", "Community gardener supporting neighbors through shared green spaces and easy access to fresh food."),
+        ["A safe ride to every appointment"] = ("Accra, Ghana", "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=500&q=80", "I organize transport support so patients can keep showing up for care, work, and family time.")
+    };
     foreach (var seed in seeds)
     {
+        var organizer = organizerProfiles[seed.Title];
         await using var insert = db.CreateCommand();
-        insert.CommandText = "INSERT INTO fundraisers(slug,title,summary,story,image_url,goal,reported_raised,reported_donation_count,published,featured,created_at,category) VALUES($slug,$title,$summary,$story,$image,$goal,0,0,1,1,$created,$category)";
+        insert.CommandText = "INSERT INTO fundraisers(slug,title,summary,story,image_url,goal,reported_raised,reported_donation_count,published,featured,created_at,category,organizer_name,organizer_location,organizer_profile_image,organizer_bio) VALUES($slug,$title,$summary,$story,$image,$goal,0,0,1,1,$created,$category,$organizer_name,$organizer_location,$organizer_profile_image,$organizer_bio)";
         insert.Parameters.AddWithValue("$slug", Slugify(seed.Title));
         insert.Parameters.AddWithValue("$title", seed.Title);
         insert.Parameters.AddWithValue("$summary", seed.Summary);
@@ -1552,6 +1645,10 @@ async Task InitializeDatabase()
         insert.Parameters.AddWithValue("$goal", seed.Goal);
         insert.Parameters.AddWithValue("$created", DateTimeOffset.UtcNow.ToString("O"));
         insert.Parameters.AddWithValue("$category", seed.Category);
+        insert.Parameters.AddWithValue("$organizer_name", seed.Title.Contains("Maya") ? "Maya Sanni" : seed.Title.Contains("garden") ? "Aisha Brown" : "Nadia Mensah");
+        insert.Parameters.AddWithValue("$organizer_location", organizer.location);
+        insert.Parameters.AddWithValue("$organizer_profile_image", organizer.image);
+        insert.Parameters.AddWithValue("$organizer_bio", organizer.bio);
         await insert.ExecuteNonQueryAsync();
     }
 }
@@ -1812,6 +1909,10 @@ string? ValidateFundraiser(FundraiserInput? input)
     if (string.IsNullOrWhiteSpace(input.Summary) || input.Summary.Trim().Length > 220) return "Add a short description of up to 220 characters.";
     if (string.IsNullOrWhiteSpace(input.Story) || input.Story.Trim().Length > 12000) return "Add a story of up to 12,000 characters.";
     if (string.IsNullOrWhiteSpace(input.Image) || input.Image.Length > 500) return "Add a valid campaign image.";
+    if (string.IsNullOrWhiteSpace(input.OrganizerName) || input.OrganizerName.Trim().Length > 100) return "Add a fundraiser organizer name up to 100 characters.";
+    if (input.OrganizerLocation.Length > 120) return "Keep the organizer location under 120 characters.";
+    if (input.OrganizerProfileImage.Length > 500) return "Use a valid profile image URL.";
+    if (input.OrganizerBio.Length > 500) return "Keep the organizer bio under 500 characters.";
     if (!fundraiserCategories.Contains(input.Category, StringComparer.Ordinal)) return "Choose a valid fundraiser category.";
     if (input.Goal < 100 || input.Goal > 100_000_000) return "Set a goal between $1 and $1,000,000.";
     if (input.ReportedRaised < 0 || input.ReportedRaised > 100_000_000) return "Set prior support between $0 and $1,000,000.";
@@ -1827,6 +1928,10 @@ void AddFundraiserParameters(SqliteCommand command, FundraiserInput input, strin
     command.Parameters.AddWithValue("$story", input.Story.Trim());
     command.Parameters.AddWithValue("$image", input.Image.Trim());
     command.Parameters.AddWithValue("$category", input.Category);
+    command.Parameters.AddWithValue("$organizer_name", input.OrganizerName.Trim());
+    command.Parameters.AddWithValue("$organizer_location", input.OrganizerLocation.Trim());
+    command.Parameters.AddWithValue("$organizer_profile_image", input.OrganizerProfileImage.Trim());
+    command.Parameters.AddWithValue("$organizer_bio", input.OrganizerBio.Trim());
     command.Parameters.AddWithValue("$goal", input.Goal);
     command.Parameters.AddWithValue("$reported_raised", input.ReportedRaised);
     command.Parameters.AddWithValue("$reported_donation_count", input.ReportedDonationCount);
@@ -1840,8 +1945,29 @@ string Slugify(string value)
     return slug.Length > 70 ? slug[..70].TrimEnd('-') : slug;
 }
 
-object ReadFundraiser(SqliteDataReader reader) => new { slug = reader.GetString(0), title = reader.GetString(1), summary = reader.GetString(2), story = reader.GetString(3), image = reader.GetString(4), goal = reader.GetInt64(5), raised = reader.GetInt64(6), donations = reader.GetInt64(7), reportedRaised = reader.GetInt64(8), reportedDonations = reader.GetInt64(9), category = reader.GetString(10) };
+object ReadFundraiser(SqliteDataReader reader)
+{
+    var index = 0;
+    return new
+    {
+        slug = reader.GetString(index++),
+        title = reader.GetString(index++),
+        summary = reader.GetString(index++),
+        story = reader.GetString(index++),
+        image = reader.GetString(index++),
+        goal = reader.GetInt64(index++),
+        raised = reader.GetInt64(index++),
+        donations = reader.GetInt64(index++),
+        reportedRaised = reader.GetInt64(index++),
+        reportedDonations = reader.GetInt64(index++),
+        category = reader.GetString(index++),
+        organizerName = reader.GetString(index++),
+        organizerLocation = reader.GetString(index++),
+        organizerProfileImage = reader.GetString(index++),
+        organizerBio = reader.GetString(index++)
+    };
+}
 
-record FundraiserInput(string Title, string Summary, string Story, string Image, long Goal, long ReportedRaised, long ReportedDonationCount, bool Published, bool Featured, string Category);
+record FundraiserInput(string Title, string Summary, string Story, string Image, long Goal, long ReportedRaised, long ReportedDonationCount, bool Published, bool Featured, string Category, string OrganizerName, string OrganizerLocation, string OrganizerProfileImage, string OrganizerBio);
 record CampaignUpdateInput(string Title, string Body);
 record SeedCampaign(string Title, string Summary, string Story, string Image, long Goal, string Category);
