@@ -1,4 +1,4 @@
-const appRoot = document.querySelector("#app");
+﻿const appRoot = document.querySelector("#app");
 const money = cents => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(cents / 100);
 const formatCurrency = (minor, code) => new Intl.NumberFormat(undefined, { style: "currency", currency: code, minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(minor / 100);
 const DONATION_PRESETS = { USD: [25, 50, 100, 250], NGN: [10000, 25000, 50000, 100000], GBP: [20, 40, 80, 200], EUR: [20, 50, 100, 200] };
@@ -175,19 +175,35 @@ function openDonation(campaign) {
   }).catch(() => { rates = null; });
   root.querySelector(".modal-close").addEventListener("click", closeDialog);
   root.querySelector(".modal-backdrop").addEventListener("click", event => { if (event.target.classList.contains("modal-backdrop")) closeDialog(); });
-  root.querySelector("#donation-form").addEventListener("submit", async event => {
-    event.preventDefault();
-    const amount = currentMinor();
-    const button = root.querySelector("form .button");
-    const error = root.querySelector("#donate-error");
+  const cardCheckout = async (amount, button, error) => {
     button.disabled = true; button.textContent = "Opening secure payment…"; error.textContent = "";
     try {
       const result = await request("/api/donations/checkout", { method: "POST", body: JSON.stringify({ slug: campaign.slug, amount, currency: currencySelect.value, name: root.querySelector("#donor-name").value, email: root.querySelector("#donor-email").value, anonymous: root.querySelector("#anonymous").checked }) });
       // Returning with the back button restores this page from cache; reset the button so the donor can retry.
       window.addEventListener("pageshow", () => { button.disabled = false; button.textContent = "Donate securely"; }, { once: true });
-      if (result.card) { startCardPayment(result, campaign, closeDialog); return; }
       startHostedPaymentAssistant(result, campaign, closeDialog);
     } catch (issue) { error.textContent = issue.message; button.disabled = false; button.textContent = "Donate securely"; }
+  };
+  root.querySelector("#donation-form").addEventListener("submit", event => {
+    event.preventDefault();
+    const amount = currentMinor();
+    const form = root.querySelector("#donation-form");
+    const error = root.querySelector("#donate-error");
+    if (!(amount > 0)) { error.textContent = "Please choose or enter a gift amount."; return; }
+    error.textContent = "";
+    const methods = [["paypal", "PayPal"], ["cashapp", "Cash App"], ["venmo", "Venmo"], ["bank", "Bank transfer"], ["card", "Card"]];
+    root.querySelector("#method-picker")?.remove();
+    form.hidden = true;
+    form.insertAdjacentHTML("afterend", `<div id="method-picker"><h2>How would you like to donate?</h2><p>${esc(formatCurrency(amount, currencySelect.value))} to “${esc(campaign.title)}”</p><div class="method-list">${methods.map(([key, label]) => `<button class="button button-light" type="button" data-method="${key}">${label}</button>`).join("")}</div><button class="button button-light" type="button" id="method-back">Back</button></div>`);
+    const picker = root.querySelector("#method-picker");
+    picker.querySelector("#method-back").addEventListener("click", () => { picker.remove(); form.hidden = false; });
+    picker.querySelectorAll("[data-method]").forEach(choice => choice.addEventListener("click", () => {
+      const method = choice.dataset.method;
+      if (method === "card") { picker.remove(); form.hidden = false; cardCheckout(amount, form.querySelector(".button"), error); return; }
+      const params = new URLSearchParams({ amount: String(amount), currency: currencySelect.value, slug: campaign.slug, title: campaign.title });
+      document.body.style.overflow = "";
+      location.href = `/pay/${method}?${params}`;
+    }));
   });
 }
 
@@ -227,91 +243,6 @@ function startHostedPaymentAssistant(order, campaign, closeDialog) {
   };
   waiting();
   open();
-}
-
-// Kindwell's own card form for direct gateway card APIs (used when enabled by backend mode).
-function startCardPayment(order, campaign, closeDialog) {
-  const root = document.querySelector("#modal-root");
-  const amountText = formatCurrency(Math.round(order.amount * 100), order.currency);
-  const panel = body => { root.innerHTML = `<div class="modal-backdrop" role="presentation"><section class="auth-wrap" role="dialog" aria-modal="true" aria-label="Kindwell payment"><div class="auth-panel"><div>${brand()}</div>${body}</div></section></div>`; };
-  const again = () => { closeDialog(); openDonation(campaign); };
-  const result = (mark, title, text, primary, onPrimary, secondary, onSecondary) => {
-    panel(`<span class="success-mark">${mark}</span><h1>${esc(title)}</h1><p>${esc(text)}</p><button class="button" id="result-primary" type="button">${esc(primary)}</button><button class="button button-light" id="result-secondary" type="button">${esc(secondary)}</button>`);
-    root.querySelector("#result-primary").addEventListener("click", onPrimary);
-    root.querySelector("#result-secondary").addEventListener("click", onSecondary);
-  };
-  const failed = text => result("×", "Payment failed", text || "The payment could not be completed. You were not charged.", "Try again", again, "Cancel", closeDialog);
-  const post = (url, body) => request(url, { method: "POST", body: JSON.stringify(body) });
-  let card = null;
-
-  const finish = async () => {
-    card = null;
-    panel(`<span class="success-mark">…</span><h1>Confirming your payment</h1><p>    Please wait while we confirm with Paymentwings.</p>`);
-    try {
-      const check = () => request(`/api/donations/status/${encodeURIComponent(order.txRef)}`);
-      let status = await check();
-      for (let attempt = 0; !status.confirmed && !status.failed && attempt < 5; attempt++) { await new Promise(resolve => setTimeout(resolve, 1500)); status = await check(); }
-      if (status.confirmed) result("✓", "Thank you for your donation!", `Your ${formatCurrency(status.originalAmount, status.currency)} gift to ${status.campaign} is confirmed.`, "Keep donating", again, "Cancel", closeDialog);
-      else if (status.failed) failed("The payment provider could not complete this payment. No gift was recorded.");
-          else result("…", "Still confirming", "Your payment hasn't been confirmed yet. Your gift will appear once Paymentwings confirms it; nothing is shown as complete before then.", "Close", closeDialog, "Donate again", again);
-        } catch { result("…", "Still confirming", "We couldn't check the payment just yet. Your gift will appear once Paymentwings confirms it.", "Close", closeDialog, "Donate again", again); }
-  };
-
-  const handle = outcome => {
-    if (outcome.step === "pin") showPin(outcome.message);
-    else if (outcome.step === "otp") showOtp(outcome.flwRef, outcome.message);
-    else if (outcome.step === "redirect" && outcome.redirect) { card = null; location.assign(outcome.redirect); }
-    else if (outcome.step === "verify") finish();
-    else { card = null; failed(outcome.message); }
-  };
-
-  const step = (formSelector, action) => {
-    const form = root.querySelector(formSelector);
-    const button = form.querySelector("button[type=submit]");
-    const error = form.querySelector(".notice");
-    form.addEventListener("submit", async event => {
-      event.preventDefault();
-      const label = button.textContent;
-      button.disabled = true; button.textContent = "Processing…"; error.textContent = "";
-      try { await action(form); }
-      catch (issue) { error.textContent = issue.message; button.disabled = false; button.textContent = label; }
-    });
-  };
-
-  const showPin = (message = "Enter your card PIN to continue.") => {
-    panel(`<h1>Enter your card PIN</h1><p>${esc(message)}</p><form id="pin-form" class="admin-form"><label for="card-pin">Card PIN</label><input id="card-pin" type="password" inputmode="numeric" autocomplete="off" maxlength="6" required placeholder="••••"><button class="button" type="submit">Confirm PIN</button><button class="button button-light" type="button" id="pin-cancel">Cancel</button><p class="notice" role="alert"></p></form>`);
-    root.querySelector("#pin-cancel").addEventListener("click", () => { card = null; closeDialog(); });
-    step("#pin-form", async form => handle(await post("/api/donations/charge", { txRef: order.txRef, card, pin: form.querySelector("#card-pin").value })));
-  };
-
-  const showOtp = (flwRef, message = "Enter the code your bank sent you.") => {
-    card = null;
-    panel(`<h1>Enter your one-time code</h1><p>${esc(message)}</p><form id="otp-form" class="admin-form"><label for="card-otp">One-time code</label><input id="card-otp" inputmode="numeric" autocomplete="one-time-code" maxlength="10" required><button class="button" type="submit">Confirm code</button><button class="button button-light" type="button" id="otp-cancel">Cancel</button><p class="notice" role="alert"></p></form>`);
-    root.querySelector("#otp-cancel").addEventListener("click", closeDialog);
-    step("#otp-form", async form => handle(await post("/api/donations/charge/validate", { txRef: order.txRef, flwRef, otp: form.querySelector("#card-otp").value })));
-  };
-
-  panel(`<h1>Payment details</h1><p><strong>${esc(amountText)}</strong> to “${esc(order.campaign)}”</p><div class="card-preview" aria-hidden="true" style="background:linear-gradient(135deg,#1f6b4f,#14392b);color:#fff;border-radius:16px;padding:18px;margin:12px 0;text-align:left"><div style="opacity:.8;font-size:.8rem">Card</div><div id="preview-number" style="font-size:1.25rem;letter-spacing:.12em;margin:14px 0">•••• •••• •••• ••••</div><div style="display:flex;justify-content:space-between;font-size:.85rem"><span>Valid till <b id="preview-expiry">MM/YY</b></span><span id="preview-brand"></span></div></div><form id="card-form" class="admin-form" autocomplete="off"><label for="card-number">Card number</label><input id="card-number" inputmode="numeric" autocomplete="off" maxlength="23" required placeholder="1234 5678 9012 3456"><div style="display:flex;gap:12px"><div style="flex:1"><label for="card-expiry">Valid till</label><input id="card-expiry" inputmode="numeric" autocomplete="off" maxlength="5" required placeholder="MM/YY"></div><div style="flex:1"><label for="card-cvv">CVV</label><input id="card-cvv" type="password" inputmode="numeric" autocomplete="off" maxlength="4" required placeholder="123"></div></div><button class="button" type="submit">Pay ${esc(amountText)}</button><button class="button button-light" type="button" id="card-cancel">Cancel</button><p class="secure-copy">Your card details are sent over an encrypted connection to Paymentwings to process this payment. Kindwell does not store your card number, CVV or PIN.</p><p class="notice" role="alert"></p></form>`);
-  const number = root.querySelector("#card-number");
-  const expiry = root.querySelector("#card-expiry");
-  const brandFor = digits => /^4/.test(digits) ? "Visa" : /^(5[1-5]|2[2-7])/.test(digits) ? "Mastercard" : /^(506|650)/.test(digits) ? "Verve" : "";
-  number.addEventListener("input", () => {
-    const digits = number.value.replace(/\D/g, "").slice(0, 19);
-    number.value = digits.replace(/(.{4})/g, "$1 ").trim();
-    root.querySelector("#preview-number").textContent = number.value || "•••• •••• •••• ••••";
-    root.querySelector("#preview-brand").textContent = brandFor(digits);
-  });
-  expiry.addEventListener("input", () => {
-    const digits = expiry.value.replace(/\D/g, "").slice(0, 4);
-    expiry.value = digits.length > 2 ? `${digits.slice(0, 2)}/${digits.slice(2)}` : digits;
-    root.querySelector("#preview-expiry").textContent = expiry.value || "MM/YY";
-  });
-  root.querySelector("#card-cancel").addEventListener("click", closeDialog);
-  step("#card-form", async form => {
-    const [month, year] = expiry.value.split("/");
-    card = { number: number.value, month, year, cvv: form.querySelector("#card-cvv").value };
-    handle(await post("/api/donations/charge", { txRef: order.txRef, card }));
-  });
 }
 
 async function renderPeople() {
@@ -491,6 +422,37 @@ async function renderOngoing() {
   form.querySelectorAll("select").forEach(select => select.addEventListener("change", () => loadPage(1)));
   await loadPage(currentPage);
   setupMenu();
+}
+
+// Fill these in with the real receiving details before going live.
+const BTC_PAYMENT = {
+  address: "bc1qyqu0f5ce28s6pa4357r0xc4jz40wt09zsfuety",
+  bank: { name: "YOUR_BANK_NAME", account: "YOUR_ACCOUNT_NAME", number: "YOUR_ACCOUNT_NUMBER" }
+};
+const PAY_METHODS = {
+  paypal: { label: "PayPal", steps: ["Open the PayPal app or log in at paypal.com.", "Tap <strong>Crypto</strong> and choose <strong>Bitcoin (BTC)</strong>. Buy BTC if you don't have any yet.", "Tap <strong>Send</strong> / <strong>Transfer</strong> and select <strong>Send to external wallet</strong>.", "Paste the Kindwell BTC wallet address shown below.", "Enter the equivalent of your gift amount and confirm the transfer."] },
+  cashapp: { label: "Cash App", steps: ["Open Cash App and tap the <strong>Bitcoin</strong> tab (₿).", "Buy BTC if your balance is not enough.", "Tap <strong>Send</strong> / <strong>Withdraw</strong> and choose <strong>Send Bitcoin</strong>.", "Paste the Kindwell BTC wallet address shown below.", "Enter the equivalent of your gift amount, review, and confirm."] },
+  venmo: { label: "Venmo", steps: ["Open the Venmo app and tap the <strong>Crypto</strong> tab.", "Choose <strong>Bitcoin</strong> and buy BTC if you don't have any yet.", "Tap <strong>Transfer</strong> and select <strong>Send to external wallet</strong>.", "Paste the Kindwell BTC wallet address shown below.", "Enter the equivalent of your gift amount and confirm."] },
+  bank: { label: "Bank transfer", steps: ["Log in to your banking app or crypto exchange.", "Buy BTC with your bank transfer if you don't have any yet.", "Choose <strong>Withdraw / Send BTC</strong> to an external wallet.", "Paste the Kindwell BTC wallet address shown below.", "Enter the equivalent of your gift amount and confirm."] }
+};
+
+function renderPay(method) {
+  const info = PAY_METHODS[method];
+  if (!info) return renderHome();
+  const params = new URLSearchParams(location.search);
+  const slug = params.get("slug") || "";
+  const title = params.get("title") || "this fundraiser";
+  const amount = Number(params.get("amount"));
+  const currency = /^[A-Z]{3}$/.test(params.get("currency") || "") ? params.get("currency") : "USD";
+  const amountText = amount > 0 ? formatCurrency(amount, currency) : "your gift";
+  document.title = `Pay with ${info.label} | Kindwell`;
+  const showAddress = esc(BTC_PAYMENT.address);
+  appRoot.innerHTML = `${header()}<main class="auth-wrap"><section class="auth-panel" id="pay-panel"><div>${brand()}</div><h1>Pay with ${esc(info.label)}</h1><p>Send <strong>${esc(amountText)}</strong> in Bitcoin (BTC) to support “${esc(title)}”.</p><ol class="pay-steps">${info.steps.map(step => `<li>${step}</li>`).join("")}</ol><label>Kindwell BTC wallet address</label><input id="btc-address" readonly value="${showAddress}"><button class="button button-light" id="copy-address" type="button">Copy address</button><p class="secure-copy">Only send Bitcoin (BTC) to this address. Transfers can't be reversed, so double-check the address before confirming.</p><button class="button" id="made-payment" type="button">I have made payment</button><a class="button button-light" href="${slug ? `/fundraisers/${encodeURIComponent(slug)}` : "/"}">Back</a></section></main>${footer()}`;
+  setupMenu();
+  document.querySelector("#copy-address").addEventListener("click", async event => { await navigator.clipboard.writeText(BTC_PAYMENT.address); event.currentTarget.textContent = "Address copied"; });
+  document.querySelector("#made-payment").addEventListener("click", () => {
+    document.querySelector("#pay-panel").innerHTML = `<div>${brand()}</div><span class="success-mark">✓</span><h1>Thank you!</h1><p>We appreciate your generosity toward “${esc(title)}”. Your gift will be confirmed once the Bitcoin transfer is received.</p><a class="button" href="${slug ? `/fundraisers/${encodeURIComponent(slug)}` : "/fundraisers"}">Donate more</a>`;
+  });
 }
 
 async function renderThankYou() {
@@ -867,6 +829,7 @@ async function start() {
   if (pathname === "/categories" || pathname === "/categories/") return renderCategories();
   if (pathname === "/admin" || pathname === "/admin/") return renderAdmin();
   if (pathname === "/thank-you") return renderThankYou();
+  if (pathname.startsWith("/pay/")) return renderPay(pathname.slice("/pay/".length).replace(/\/$/, ""));
   if (pathname === "/privacy") return renderInfoPage("privacy");
   if (pathname === "/terms") return renderInfoPage("terms");
   if (pathname.startsWith("/fundraisers/")) return renderDetail(pathname.slice("/fundraisers/".length));

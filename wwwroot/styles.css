@@ -327,6 +327,7 @@ h1 { max-width: 570px; margin: 18px 0 17px; font: 400 clamp(44px, 5.2vw, 68px)/1
   .hero-actions .button { flex: 1; text-align: center; }
 }
 .result-actions { display: flex; gap: 10px; margin-top: 6px; } .result-actions .button { flex: 1; }
+.method-list { display: grid; gap: 10px; margin: 14px 0; } .pay-steps { padding-left: 20px; line-height: 1.6; } #btc-address { width: 100%; }
 
 .social-login { display: grid; gap: 11px; margin: 22px 0 6px; }
 .social-button { display: flex; align-items: center; justify-content: center; gap: 11px; min-height: 48px; padding: 0 18px; border: 1px solid #d6dfd8; border-radius: 8px; background: #fff; color: #1d2b22; font-weight: 700; font-size: 14px; text-decoration: none; transition: background .15s, transform .15s, box-shadow .15s; }
