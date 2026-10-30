@@ -44,17 +44,17 @@ Open `/admin` to manage campaign drafts, publishing, images, goals, and donation
 
 ## Paymentwings payments
 
-Create a Paymentwings account and configure the API secret key and webhook secret hash on the server (never commit them):
+Create a Paymentwings account and copy your key pair from the dashboard (Settings > API). Configure the server (never commit keys):
 
 ```powershell
-$env:PAYMENTWINGS_SECRET_KEY = "FLWSECK_TEST-..."
-$env:PAYMENTWINGS_WEBHOOK_HASH = "your-secret-hash"
+$env:PAYMENTWINGS_PUBLIC_KEY = "pub_..."   # sandbox or live public key
+$env:PAYMENTWINGS_SECRET_KEY = "sec_..."   # matching private key
+$env:PAYMENTWINGS_WEBHOOK_KEY = "..."      # webhook key, used only to verify webhooks
 ```
 
-In the Paymentwings dashboard (Settings > Webhooks) set the URL to `https://<your-public-host>/api/paymentwings/webhook` and the secret hash to the same value as `PAYMENTWINGS_WEBHOOK_HASH`. Use a tunnel such as ngrok locally. A gift is counted only after the server verifies the transaction with Paymentwings's API (status, tx_ref, currency and exact amount); webhook payloads and redirect URLs are never trusted on their own. The donor email is sent to Paymentwings for the receipt. Use test keys until business verification is complete.
+Requests authenticate as `Authorization: Bearer <public>:<private>`. A sandbox key pair automatically runs in test mode — no real funds move. The webhook URL is set per payment at checkout to `https://<your-public-host>/api/paymentwings/webhook`; use a tunnel such as ngrok locally. Webhooks are verified with `md5(txn|timestamp|webhook_key)`, then the payment is re-fetched from Paymentwings's lookup API and only recorded when the status, currency and exact amount match. Webhook payloads and redirect URLs are never trusted on their own. The donor email is sent to Paymentwings for the receipt.
 
 Processing fees depend on the donor's country and payment method and are deducted by Paymentwings. Refund requests may be submitted within 30 days and are reviewed individually; provider fees may not be refundable. Review this policy and applicable fundraising, charitable solicitation, privacy, tax, and consumer-protection requirements with qualified counsel before accepting live donations.
-
 ## Configuration and operations
 
 - `ADMIN_EMAIL`, `ADMIN_PASSWORD`: required for administrator login.

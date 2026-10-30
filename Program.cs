@@ -52,7 +52,7 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
 });
 builder.Services.AddAuthorization(options => options.AddPolicy("Administrator", policy => policy.RequireRole("Administrator")));
 
-var paymentwingsHttp = new HttpClient { BaseAddress = new Uri("https://api.flutterwave.com/v3/"), Timeout = TimeSpan.FromSeconds(20) };
+var paymentwingsHttp = new HttpClient { BaseAddress = new Uri("https://api.paymentwings.com"), Timeout = TimeSpan.FromSeconds(20) };
 var app = builder.Build();
 await InitializeDatabase();
 IReadOnlyList<string> donationCurrencies = CurrencyRules.ParseAllowed(Environment.GetEnvironmentVariable("DONATION_CURRENCIES"));
@@ -866,8 +866,8 @@ admin.MapDelete("/fundraisers/{id:long}", async (long id, HttpContext context, I
 app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery antiforgery, CancellationToken cancellationToken) =>
 {
     if (!await IsValidRequestToken(context, antiforgery)) return Results.BadRequest(new { error = "Please refresh and try again." });
-    var secretKey = Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY") ?? Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY");
-    if (string.IsNullOrWhiteSpace(secretKey)) return Results.Problem("Secure checkout is not configured yet. Please try again later.", statusCode: 503);
+    var credentials = PaymentwingsCredentials();
+    if (credentials is null) return Results.Problem("Secure checkout is not configured yet. Please try again later.", statusCode: 503);
     using var payload = await JsonDocument.ParseAsync(context.Request.Body, cancellationToken: cancellationToken);
     var root = payload.RootElement;
     var slug = root.TryGetProperty("slug", out var slugValue) ? slugValue.GetString()?.Trim() : null;
@@ -929,38 +929,42 @@ app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery 
     insert.Parameters.AddWithValue("$date", DateTimeOffset.UtcNow.ToString("O"));
     var donationId = Convert.ToInt64(await insert.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
 
-    // Kindwell's own card form: the donor never sees a Paymentwings page. The charge is created later with the card details.
-    if (CardFormEnabled())
-        return Results.Ok(new { card = true, txRef, amount = amount / 100m, currency, campaign = title });
-
     try
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, "payments")
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v2/payment/create")
         {
             Content = JsonContent.Create(new
             {
-                tx_ref = txRef,
                 amount = amount / 100m,
                 currency,
-                redirect_url = $"{origin}/thank-you?tx_ref={txRef}",
-                customer = new { email = donorEmail, name = donorName.Length == 0 ? "Kind donor" : donorName },
-                customizations = new { title = "Kindwell", description = $"Donation to {title}", logo = $"{origin}/kindwell-logo.png" },
-                meta = new { donation_id = donationId }
+                customer_email = donorEmail,
+                success_url = $"{origin}/thank-you?tx_ref={txRef}",
+                cancel_url = $"{origin}/thank-you?tx_ref={txRef}&status=cancelled",
+                webhook_url = $"{origin}/api/paymentwings/webhook",
+                metadata = txRef
             })
         };
-        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", secretKey);
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", credentials);
         using var response = await paymentwingsHttp.SendAsync(request, cancellationToken);
         using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
-        var link = response.IsSuccessStatusCode
-            && result.RootElement.TryGetProperty("status", out var statusValue) && statusValue.GetString() == "success"
-            && result.RootElement.TryGetProperty("data", out var dataValue) && dataValue.TryGetProperty("link", out var linkValue)
-            ? linkValue.GetString() : null;
-        if (string.IsNullOrWhiteSpace(link))
+        string? transactionId = null, checkoutLink = null;
+        if (response.IsSuccessStatusCode && result.RootElement.TryGetProperty("ok", out var okValue) && okValue.ValueKind == JsonValueKind.True
+            && result.RootElement.TryGetProperty("data", out var dataValue))
+        {
+            transactionId = dataValue.TryGetProperty("transaction_id", out var tid) ? tid.GetString() : null;
+            checkoutLink = dataValue.TryGetProperty("url", out var urlValue) ? urlValue.GetString() : null;
+        }
+        if (string.IsNullOrWhiteSpace(transactionId) || string.IsNullOrWhiteSpace(checkoutLink))
         {
             app.Logger.LogWarning("Paymentwings rejected checkout for {Currency} (HTTP {Status}).", currency, (int)response.StatusCode);
             throw new HttpRequestException("Paymentwings did not return a checkout link.");
         }
-        return Results.Ok(new { url = link, txRef, amount = amount / 100m, currency, campaign = title });
+        await using var save = db.CreateCommand();
+        save.CommandText = "UPDATE donations SET provider_transaction_id=$tid WHERE id=$id";
+        save.Parameters.AddWithValue("$tid", transactionId);
+        save.Parameters.AddWithValue("$id", donationId);
+        await save.ExecuteNonQueryAsync(cancellationToken);
+        return Results.Ok(new { url = checkoutLink, txRef, amount = amount / 100m, currency, campaign = title });
     }
     catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
     {
@@ -972,188 +976,55 @@ app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery 
     }
 });
 
-// Card details only pass through memory on their way to Paymentwings' charge API. They are never written to the database, logs or admin views.
-bool CardFormEnabled()
+// Paymentwings authenticates with the public and private key as a colon-separated Bearer pair.
+string? PaymentwingsCredentials()
 {
-    var secret = Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY") ?? Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY");
-    if (string.IsNullOrWhiteSpace(secret)) return false;
-    return secret.StartsWith("FLWSECK_TEST", StringComparison.Ordinal) || Environment.GetEnvironmentVariable("CARD_FORM_PCI_CONFIRMED") == "true";
-}
-
-string EncryptionKey()
-{
-    var configured = Environment.GetEnvironmentVariable("PAYMENTWINGS_ENCRYPTION_KEY") ?? Environment.GetEnvironmentVariable("FLUTTERWAVE_ENCRYPTION_KEY");
-    if (!string.IsNullOrWhiteSpace(configured)) return configured.Trim();
-    var secret = Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY") ?? Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY") ?? "";
-    var adjusted = secret.Replace("FLWSECK-", "", StringComparison.Ordinal);
-    var md5 = Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(secret))).ToLowerInvariant();
-    return adjusted[..Math.Min(12, adjusted.Length)] + md5[^12..];
-}
-
-string Encrypt3Des(string plain)
-{
-    using var tdes = TripleDES.Create();
-    tdes.Mode = CipherMode.ECB;
-    tdes.Padding = PaddingMode.PKCS7;
-    tdes.Key = Encoding.UTF8.GetBytes(EncryptionKey());
-    var bytes = Encoding.UTF8.GetBytes(plain);
-    return Convert.ToBase64String(tdes.CreateEncryptor().TransformFinalBlock(bytes, 0, bytes.Length));
-}
-
-bool PassesLuhn(string digits)
-{
-    var sum = 0;
-    for (var i = 0; i < digits.Length; i++)
-    {
-        var d = digits[digits.Length - 1 - i] - '0';
-        if (i % 2 == 1) { d *= 2; if (d > 9) d -= 9; }
-        sum += d;
-    }
-    return sum % 10 == 0;
-}
-
-app.MapPost("/api/donations/charge", async (HttpContext context, IAntiforgery antiforgery, CancellationToken cancellationToken) =>
-{
-    if (!await IsValidRequestToken(context, antiforgery)) return Results.BadRequest(new { error = "Please refresh and try again." });
-    if (!CardFormEnabled()) return Results.Problem("Card payments are not enabled.", statusCode: 503);
-    if (context.Request.ContentLength > 4096) return Results.BadRequest(new { error = "Check your card details and try again." });
-    JsonDocument payload;
-    try { payload = await JsonDocument.ParseAsync(context.Request.Body, cancellationToken: cancellationToken); }
-    catch (JsonException) { return Results.BadRequest(new { error = "Check your card details and try again." }); }
-    using (payload)
-    {
-        var root = payload.RootElement;
-        string Str(JsonElement e, string name) => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString()?.Trim() ?? "" : "";
-        var txRef = Str(root, "txRef");
-        root.TryGetProperty("card", out var card);
-        var number = new string(Str(card, "number").Where(char.IsDigit).ToArray());
-        var cvv = Str(card, "cvv");
-        var month = Str(card, "month");
-        var year = Str(card, "year");
-        var pin = Str(root, "pin");
-        if (!txRef.StartsWith("kw-", StringComparison.Ordinal) || txRef.Length > 100) return Results.NotFound();
-        if (number.Length is < 12 or > 19 || !PassesLuhn(number)) return Results.BadRequest(new { error = "Check your card number." });
-        if (cvv.Length is < 3 or > 4 || !cvv.All(char.IsDigit)) return Results.BadRequest(new { error = "Check your CVV." });
-        if (!int.TryParse(month, out var mm) || mm is < 1 or > 12 || !int.TryParse(year, out var yy)) return Results.BadRequest(new { error = "Check the card's expiry date." });
-        if (yy >= 100) yy %= 100;
-        var now = DateTime.UtcNow;
-        if (2000 + yy < now.Year || (2000 + yy == now.Year && mm < now.Month)) return Results.BadRequest(new { error = "This card has expired." });
-        if (pin.Length > 0 && (pin.Length is < 4 or > 6 || !pin.All(char.IsDigit))) return Results.BadRequest(new { error = "Enter the PIN as 4 to 6 digits." });
-
-        string? currency, email, name;
-        long minor;
-        await using (var db = await OpenDatabase(cancellationToken))
-        await using (var lookup = db.CreateCommand())
-        {
-            lookup.CommandText = "SELECT currency,COALESCE(original_amount_minor,amount),donor_email,donor_name FROM donations WHERE provider_session_id=$tx AND status='pending'";
-            lookup.Parameters.AddWithValue("$tx", txRef);
-            await using var reader = await lookup.ExecuteReaderAsync(cancellationToken);
-            if (!await reader.ReadAsync(cancellationToken)) return Results.NotFound(new { error = "This payment is no longer open. Please start again." });
-            currency = reader.GetString(0); minor = reader.GetInt64(1);
-            email = reader.IsDBNull(2) ? null : reader.GetString(2); name = reader.GetString(3);
-        }
-        if (string.IsNullOrWhiteSpace(email)) return Results.BadRequest(new { error = "Please start the donation again." });
-
-        var configuredOrigin = Environment.GetEnvironmentVariable("PUBLIC_BASE_URL");
-        var origin = string.IsNullOrWhiteSpace(configuredOrigin) ? $"{context.Request.Scheme}://{context.Request.Host}" : configuredOrigin.TrimEnd('/');
-        var chargeBody = new Dictionary<string, object>
-        {
-            ["card_number"] = number, ["cvv"] = cvv, ["expiry_month"] = mm.ToString("00"), ["expiry_year"] = yy.ToString("00"),
-            ["currency"] = currency, ["amount"] = (minor / 100m).ToString("0.00", CultureInfo.InvariantCulture), ["email"] = email, ["fullname"] = name,
-            ["tx_ref"] = txRef, ["redirect_url"] = $"{origin}/thank-you?tx_ref={txRef}"
-        };
-        if (pin.Length > 0) chargeBody["authorization"] = new Dictionary<string, string> { ["mode"] = "pin", ["pin"] = pin };
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Post, "charges?type=card") { Content = JsonContent.Create(new { client = Encrypt3Des(JsonSerializer.Serialize(chargeBody)) }) };
-            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY") ?? Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY"));
-            using var response = await paymentwingsHttp.SendAsync(request, cancellationToken);
-            using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
-            return Results.Ok(ChargeOutcome(result.RootElement, txRef));
-        }
-        catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
-        {
-            app.Logger.LogWarning("Paymentwings card charge could not be completed ({Type}).", ex.GetType().Name);
-            return Results.Problem("We couldn't reach the payment network. You were not charged. Please try again.", statusCode: 502);
-        }
-    }
-});
-
-app.MapPost("/api/donations/charge/validate", async (HttpContext context, IAntiforgery antiforgery, CancellationToken cancellationToken) =>
-{
-    if (!await IsValidRequestToken(context, antiforgery)) return Results.BadRequest(new { error = "Please refresh and try again." });
-    if (!CardFormEnabled()) return Results.Problem("Card payments are not enabled.", statusCode: 503);
-    using var payload = await JsonDocument.ParseAsync(context.Request.Body, cancellationToken: cancellationToken);
-    var root = payload.RootElement;
-    var txRef = root.TryGetProperty("txRef", out var t) ? t.GetString() ?? "" : "";
-    var flwRef = root.TryGetProperty("flwRef", out var f) ? f.GetString() ?? "" : "";
-    var otp = root.TryGetProperty("otp", out var o) ? o.GetString()?.Trim() ?? "" : "";
-    if (!txRef.StartsWith("kw-", StringComparison.Ordinal) || txRef.Length > 100 || flwRef.Length is 0 or > 100 || otp.Length is < 3 or > 10 || !otp.All(char.IsLetterOrDigit))
-        return Results.BadRequest(new { error = "Enter the code you were sent." });
-    try
-    {
-        using var request = new HttpRequestMessage(HttpMethod.Post, "validate-charge") { Content = JsonContent.Create(new { otp, flw_ref = flwRef, type = "card" }) };
-        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY") ?? Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY"));
-        using var response = await paymentwingsHttp.SendAsync(request, cancellationToken);
-        using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
-        return Results.Ok(ChargeOutcome(result.RootElement, txRef));
-    }
-    catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
-    {
-        return Results.Problem("We couldn't reach the payment network. Please try again.", statusCode: 502);
-    }
-});
-
-object ChargeOutcome(JsonElement body, string txRef)
-{
-    string? Get(JsonElement e, params string[] path)
-    {
-        foreach (var p in path) { if (e.ValueKind != JsonValueKind.Object || !e.TryGetProperty(p, out e)) return null; }
-        return e.ValueKind == JsonValueKind.String ? e.GetString() : null;
-    }
-    var apiStatus = Get(body, "status");
-    var message = Get(body, "message") ?? "The payment could not be completed.";
-    var mode = Get(body, "meta", "authorization", "mode");
-    var flwRef = Get(body, "data", "flw_ref");
-    var dataStatus = Get(body, "data", "status");
-    if (apiStatus != "success")
-    {
-        if (message.Contains("DCC", StringComparison.OrdinalIgnoreCase))
-            message = "This currency isn't enabled for card payments on our payment account yet. Please choose another currency (such as NGN, GBP or EUR) and try again.";
-        return new { step = "failed", message };
-    }
-    if (mode == "pin") return new { step = "pin", message = "Enter your card PIN to continue." };
-    if (mode == "otp") return new { step = "otp", flwRef, message = Get(body, "data", "processor_response") ?? "Enter the code your bank sent you." };
-    if (mode == "redirect") return new { step = "redirect", redirect = Get(body, "meta", "authorization", "redirect") };
-    if (mode == "avs_noauth") return new { step = "failed", message = "This card needs address verification, which isn't supported here. Please try another card." };
-    if (dataStatus == "successful") return new { step = "verify", flwRef };
-    if (dataStatus == "failed") return new { step = "failed", message = Get(body, "data", "processor_response") ?? message };
-    return new { step = "verify", flwRef };
+    var secret = Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY");
+    var publicKey = Environment.GetEnvironmentVariable("PAYMENTWINGS_PUBLIC_KEY");
+    if (string.IsNullOrWhiteSpace(secret) || string.IsNullOrWhiteSpace(publicKey)) return null;
+    return $"{publicKey.Trim()}:{secret.Trim()}";
 }
 
 app.MapPost("/api/paymentwings/webhook", async (HttpRequest request, CancellationToken cancellationToken) =>
 {
-    var expectedHash = Environment.GetEnvironmentVariable("PAYMENTWINGS_WEBHOOK_HASH") ?? Environment.GetEnvironmentVariable("FLUTTERWAVE_WEBHOOK_HASH");
-    if (string.IsNullOrWhiteSpace(expectedHash)) return Results.Problem("Webhook is not configured.", statusCode: 503);
+    var webhookKey = Environment.GetEnvironmentVariable("PAYMENTWINGS_WEBHOOK_KEY");
+    if (string.IsNullOrWhiteSpace(webhookKey)) return Results.Problem("Webhook is not configured.", statusCode: 503);
     if (request.ContentLength > 65_536) return Results.BadRequest();
     string rawBody;
     using (var bodyReader = new StreamReader(request.Body, Encoding.UTF8, false, 4096, true)) rawBody = await bodyReader.ReadToEndAsync(cancellationToken);
     if (rawBody.Length > 65_536) return Results.BadRequest();
-    // Paymentwings sends the dashboard secret hash in `verif-hash`; the newer `flutterwave-signature` is a base64 HMAC-SHA256 of the raw body keyed with that hash. Either proves origin.
-    var signature = request.Headers["flutterwave-signature"].ToString();
-    var expectedSignature = Convert.ToBase64String(HMACSHA256.HashData(Encoding.UTF8.GetBytes(expectedHash), Encoding.UTF8.GetBytes(rawBody)));
-    var authentic = SecureEquals(request.Headers["verif-hash"].ToString(), expectedHash) || (signature.Length > 0 && SecureEquals(signature, expectedSignature));
-    if (!authentic) { app.Logger.LogWarning("Rejected Paymentwings webhook with an invalid signature."); return Results.Unauthorized(); }
-    string? txRef;
+    string? status, txn, metadata, signature;
+    long timestamp;
     try
     {
         using var body = JsonDocument.Parse(rawBody);
-        var data = body.RootElement.TryGetProperty("data", out var d) ? d : body.RootElement;
-        txRef = data.TryGetProperty("tx_ref", out var t) ? t.GetString() : data.TryGetProperty("txRef", out var legacy) ? legacy.GetString() : null;
+        var root = body.RootElement;
+        status = root.TryGetProperty("status", out var s) ? s.GetString() : null;
+        txn = root.TryGetProperty("txn", out var t) ? t.GetString() : null;
+        metadata = root.TryGetProperty("metadata", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
+        signature = root.TryGetProperty("signature", out var sig) ? sig.GetString() : null;
+        timestamp = root.TryGetProperty("timestamp", out var ts) && ts.TryGetInt64(out var parsedTs) ? parsedTs : 0;
     }
     catch (JsonException) { return Results.BadRequest(); }
-    if (string.IsNullOrWhiteSpace(txRef) || txRef.Length > 100) return Results.Ok();
-    // The payload is never trusted: payment details are re-fetched from Paymentwings before anything is recorded.
+    if (string.IsNullOrWhiteSpace(txn) || txn.Length > 100 || string.IsNullOrWhiteSpace(signature) || timestamp <= 0) return Results.BadRequest();
+    // Paymentwings signs webhooks as md5(txn|timestamp|webhook_key).
+    var expected = Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes($"{txn}|{timestamp}|{webhookKey}"))).ToLowerInvariant();
+    if (!SecureEquals(signature.Trim().ToLowerInvariant(), expected))
+    {
+        app.Logger.LogWarning("Rejected Paymentwings webhook with an invalid signature.");
+        return Results.Unauthorized();
+    }
+    // The payload is never trusted: the payment is re-fetched from Paymentwings before anything is recorded.
+    var txRef = !string.IsNullOrWhiteSpace(metadata) && metadata.StartsWith("kw-", StringComparison.Ordinal) && metadata.Length <= 100 ? metadata : null;
+    if (txRef is null)
+    {
+        await using var db = await OpenDatabase(cancellationToken);
+        await using var lookup = db.CreateCommand();
+        lookup.CommandText = "SELECT provider_session_id FROM donations WHERE provider='paymentwings' AND provider_transaction_id=$txn";
+        lookup.Parameters.AddWithValue("$txn", txn);
+        txRef = await lookup.ExecuteScalarAsync(cancellationToken) as string;
+    }
+    if (string.IsNullOrWhiteSpace(txRef)) return Results.Ok();
     var outcome = await ConfirmPaymentwingsPayment(txRef, cancellationToken);
     return outcome == "unverified" ? Results.StatusCode(StatusCodes.Status503ServiceUnavailable) : Results.Ok();
 });
@@ -1541,8 +1412,9 @@ async Task InitializeDatabase()
 
 string CurrentMode()
 {
-    var key = Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY") ?? Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY");
-    return string.IsNullOrWhiteSpace(key) || key.StartsWith("FLWSECK_TEST", StringComparison.Ordinal) ? "test" : "live";
+    // Paymentwings issues separate sandbox and live key pairs; sandbox keys run in test mode automatically.
+    var key = Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY");
+    return string.IsNullOrWhiteSpace(key) || key.Contains("test", StringComparison.OrdinalIgnoreCase) || key.Contains("sandbox", StringComparison.OrdinalIgnoreCase) ? "test" : "live";
 }
 
 ModeScope ResolveMode(string? mode) => mode?.ToLowerInvariant() switch
@@ -1622,13 +1494,13 @@ bool IsValidEmail(string value)
 // Returns "succeeded", "failed", "pending" or "unverified" (could not be checked with Paymentwings).
 async Task<string> ConfirmPaymentwingsPayment(string txRef, CancellationToken cancellationToken)
 {
-    var secretKey = Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY") ?? Environment.GetEnvironmentVariable("FLUTTERWAVE_SECRET_KEY") ?? "";
     await using var db = await OpenDatabase(cancellationToken);
     await using var getDonation = db.CreateCommand();
-    getDonation.CommandText = "SELECT id,fundraiser_id,amount,status,currency,COALESCE(original_amount_minor,amount) FROM donations WHERE provider_session_id=$tx_ref";
+    getDonation.CommandText = "SELECT id,fundraiser_id,amount,status,currency,COALESCE(original_amount_minor,amount),provider_transaction_id FROM donations WHERE provider_session_id=$tx_ref";
     getDonation.Parameters.AddWithValue("$tx_ref", txRef);
     long donationId, fundraiserId, amount, originalMinor;
     string status, donationCurrency;
+    string? paymentwingsTransactionId;
     await using (var donationReader = await getDonation.ExecuteReaderAsync(cancellationToken))
     {
         if (!await donationReader.ReadAsync(cancellationToken)) return "unknown";
@@ -1638,37 +1510,36 @@ async Task<string> ConfirmPaymentwingsPayment(string txRef, CancellationToken ca
         status = donationReader.GetString(3);
         donationCurrency = donationReader.GetString(4);
         originalMinor = donationReader.GetInt64(5);
+        paymentwingsTransactionId = donationReader.IsDBNull(6) ? null : donationReader.GetString(6);
     }
     if (status is "succeeded" or "failed") return status;
+    if (string.IsNullOrWhiteSpace(paymentwingsTransactionId)) return "pending";
 
-    string verifiedStatus, verifiedRef, verifiedCurrency;
+    string verifiedStatus, verifiedCurrency;
     decimal verifiedAmount;
-    string? verifiedId, settlementCurrency;
+    string verifiedRef;
     long? chargedMinor, feeMinor, settledMinor;
-    if (string.IsNullOrWhiteSpace(secretKey)) return "unverified";
+    string? settlementCurrency;
     try
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"transactions/verify_by_reference?tx_ref={Uri.EscapeDataString(txRef)}");
-        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", secretKey);
-        using var response = await paymentwingsHttp.SendAsync(request, cancellationToken);
+        // The lookup endpoint is public; it is only used to learn the status. The signed webhook is the source of truth for fulfilment.
+        using var response = await paymentwingsHttp.GetAsync($"api/lookup/{Uri.EscapeDataString(paymentwingsTransactionId)}", cancellationToken);
         if (!response.IsSuccessStatusCode) return response.StatusCode == System.Net.HttpStatusCode.NotFound ? "pending" : "unverified";
         using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
         if (!result.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object) return "pending";
         verifiedStatus = data.TryGetProperty("status", out var s) ? s.GetString() ?? "" : "";
-        verifiedRef = data.TryGetProperty("tx_ref", out var r) ? r.GetString() ?? "" : "";
+        verifiedRef = data.TryGetProperty("tid", out var r) ? r.GetString() ?? "" : "";
         verifiedCurrency = data.TryGetProperty("currency", out var c) ? c.GetString() ?? "" : "";
-        verifiedAmount = data.TryGetProperty("amount", out var a) && a.TryGetDecimal(out var parsed) ? parsed : -1;
-        verifiedId = data.TryGetProperty("id", out var id) ? id.ToString() : null;
-        long? OptionalMinor(string name) => data.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetDecimal(out var number) ? DonationMoney.ToMinor(number) : null;
-        chargedMinor = OptionalMinor("charged_amount");
-        feeMinor = OptionalMinor("app_fee");
-        settledMinor = OptionalMinor("amount_settled");
-        settlementCurrency = data.TryGetProperty("settlement_currency", out var sc) && sc.ValueKind == JsonValueKind.String && sc.GetString() is { Length: 3 } code ? code.ToUpperInvariant() : null;
+        verifiedAmount = data.TryGetProperty("amount", out var a) && decimal.TryParse(a.ToString(), NumberStyles.Number, CultureInfo.InvariantCulture, out var parsed) ? parsed : -1;
+        chargedMinor = null;
+        feeMinor = null;
+        settledMinor = null;
+        settlementCurrency = null;
     }
     catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException) { app.Logger.LogWarning(ex, "Could not verify Paymentwings transaction {TxRef}.", txRef); return "unverified"; }
 
-    if (verifiedRef != txRef) return "unverified";
-    if (verifiedStatus.Equals("failed", StringComparison.OrdinalIgnoreCase) || verifiedStatus.Equals("cancelled", StringComparison.OrdinalIgnoreCase))
+    if (verifiedRef != paymentwingsTransactionId) return "unverified";
+    if (verifiedStatus.Equals("failed", StringComparison.OrdinalIgnoreCase) || verifiedStatus.Equals("cancelled", StringComparison.OrdinalIgnoreCase) || verifiedStatus.Equals("canceled", StringComparison.OrdinalIgnoreCase) || verifiedStatus.Equals("expired", StringComparison.OrdinalIgnoreCase))
     {
         await using var markFailed = db.CreateCommand();
         markFailed.CommandText = "UPDATE donations SET status='failed' WHERE id=$id AND status='pending'";
@@ -1676,7 +1547,7 @@ async Task<string> ConfirmPaymentwingsPayment(string txRef, CancellationToken ca
         await markFailed.ExecuteNonQueryAsync(cancellationToken);
         return "failed";
     }
-    if (!verifiedStatus.Equals("successful", StringComparison.OrdinalIgnoreCase)) return "pending";
+    if (!verifiedStatus.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase) && !verifiedStatus.Equals("successful", StringComparison.OrdinalIgnoreCase)) return "pending";
     if (!verifiedCurrency.Equals(donationCurrency, StringComparison.OrdinalIgnoreCase) || DonationMoney.ToMinor(verifiedAmount) != originalMinor)
     {
         app.Logger.LogWarning("Paymentwings transaction {TxRef} did not match the expected amount or currency; not recorded.", txRef);
@@ -1695,7 +1566,7 @@ async Task<string> ConfirmPaymentwingsPayment(string txRef, CancellationToken ca
         """;
     confirm.Parameters.AddWithValue("$id", donationId);
     confirm.Parameters.AddWithValue("$paid_at", paidAt);
-    confirm.Parameters.AddWithValue("$provider_id", (object?)verifiedId ?? DBNull.Value);
+    confirm.Parameters.AddWithValue("$provider_id", (object?)paymentwingsTransactionId ?? DBNull.Value);
     confirm.Parameters.AddWithValue("$charged", (object?)chargedMinor ?? DBNull.Value);
     confirm.Parameters.AddWithValue("$charged_currency", verifiedCurrency.ToUpperInvariant());
     confirm.Parameters.AddWithValue("$fee", (object?)feeMinor ?? DBNull.Value);
