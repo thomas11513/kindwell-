@@ -5,6 +5,13 @@ const DONATION_PRESETS = { USD: [25, 50, 100, 250], NGN: [10000, 25000, 50000, 1
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 let csrfToken = "";
 let campaigns = [];
+const PAYMENT_ICONS = {
+  paypal: `<span class="payment-icon payment-icon-paypal" aria-hidden="true">P</span>`,
+  cashapp: `<span class="payment-icon payment-icon-cashapp" aria-hidden="true">$</span>`,
+  venmo: `<span class="payment-icon payment-icon-venmo" aria-hidden="true">V</span>`,
+  bank: `<span class="payment-icon payment-icon-bank" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3 9 9-5 9 5M5 10v7m4-7v7m6-7v7m4-7v7M3 19h18"/></svg></span>`,
+  card: `<span class="payment-icon payment-icon-card" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/></svg></span>`
+};
 
 async function request(url, options = {}) {
   const headers = new Headers(options.headers || {});
@@ -194,7 +201,7 @@ function openDonation(campaign) {
     const methods = [["paypal", "PayPal"], ["cashapp", "Cash App"], ["venmo", "Venmo"], ["bank", "Bank transfer"], ["card", "Card"]];
     root.querySelector("#method-picker")?.remove();
     form.hidden = true;
-    form.insertAdjacentHTML("afterend", `<div id="method-picker"><h2>How would you like to donate?</h2><p>${esc(formatCurrency(amount, currencySelect.value))} to “${esc(campaign.title)}”</p><div class="method-list">${methods.map(([key, label]) => `<button class="button button-light" type="button" data-method="${key}">${label}</button>`).join("")}</div><button class="button button-light" type="button" id="method-back">Back</button></div>`);
+    form.insertAdjacentHTML("afterend", `<div id="method-picker"><h2>How would you like to donate?</h2><p>${esc(formatCurrency(amount, currencySelect.value))} to “${esc(campaign.title)}”</p><div class="method-list">${methods.map(([key, label]) => `<button class="button button-light method-choice" type="button" data-method="${key}">${PAYMENT_ICONS[key]}<span>${label}</span></button>`).join("")}</div><button class="button button-light" type="button" id="method-back">Back</button></div>`);
     const picker = root.querySelector("#method-picker");
     picker.querySelector("#method-back").addEventListener("click", () => { picker.remove(); form.hidden = false; });
     picker.querySelectorAll("[data-method]").forEach(choice => choice.addEventListener("click", () => {

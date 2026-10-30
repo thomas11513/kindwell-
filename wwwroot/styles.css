@@ -327,7 +327,7 @@ h1 { max-width: 570px; margin: 18px 0 17px; font: 400 clamp(44px, 5.2vw, 68px)/1
   .hero-actions .button { flex: 1; text-align: center; }
 }
 .result-actions { display: flex; gap: 10px; margin-top: 6px; } .result-actions .button { flex: 1; }
-.method-list { display: grid; gap: 10px; margin: 14px 0; } .pay-steps { padding-left: 20px; line-height: 1.6; } #btc-address { width: 100%; }
+.method-list { display: grid; gap: 10px; margin: 14px 0; } .method-choice { justify-content: flex-start; text-align: left; } .payment-icon { display: inline-grid; place-items: center; width: 28px; height: 28px; flex: none; border-radius: 7px; font-size: 17px; font-weight: 800; } .payment-icon svg { width: 19px; height: 19px; } .payment-icon-paypal { background: #e8f0ff; color: #1554b8; font-family: Arial, sans-serif; font-style: italic; } .payment-icon-cashapp { background: #dcf8e6; color: #15803d; } .payment-icon-venmo { background: #e0f2fe; color: #1479a8; font-family: Georgia, serif; font-style: italic; } .payment-icon-bank { background: #f7f1df; color: #97742c; } .payment-icon-card { background: #edf0f2; color: #46535b; } .pay-steps { padding-left: 20px; line-height: 1.6; } #btc-address { width: 100%; }
 
 .social-login { display: grid; gap: 11px; margin: 22px 0 6px; }
 .social-button { display: flex; align-items: center; justify-content: center; gap: 11px; min-height: 48px; padding: 0 18px; border: 1px solid #d6dfd8; border-radius: 8px; background: #fff; color: #1d2b22; font-weight: 700; font-size: 14px; text-decoration: none; transition: background .15s, transform .15s, box-shadow .15s; }
