@@ -55,7 +55,13 @@ builder.Services.AddAuthorization(options => options.AddPolicy("Administrator", 
 var paymentwingsHttp = new HttpClient { BaseAddress = new Uri("https://api.paymentwings.com"), Timeout = TimeSpan.FromSeconds(20) };
 var app = builder.Build();
 await InitializeDatabase();
+// Paylio (https://paylio.org) is a hosted card checkout: the donor enters card details on Paylio's own page and Kindwell receives a signed webhook. When configured, it powers the "Card" donation method instead of Paymentwings.
+var paylioHttp = new HttpClient { BaseAddress = new Uri("https://paylio.org/api/v1/"), Timeout = TimeSpan.FromSeconds(20) };
+var paylioActive = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PAYLIO_API_KEY"));
+var paylioCurrencies = new HashSet<string>(["USD", "EUR", "CAD", "INR"]);
 IReadOnlyList<string> donationCurrencies = CurrencyRules.ParseAllowed(Environment.GetEnvironmentVariable("DONATION_CURRENCIES"));
+// Paylio can only charge USD, EUR, CAD and INR, so other currencies are not offered while it is the active provider for cards.
+if (paylioActive) donationCurrencies = donationCurrencies.Where(paylioCurrencies.Contains).ToList();
 if (donationCurrencies.Count == 0) donationCurrencies = ["USD"];
 var rateCacheMinutes = int.TryParse(Environment.GetEnvironmentVariable("RATE_CACHE_MINUTES"), out var configuredCache) ? Math.Clamp(configuredCache, 1, 1440) : 60;
 var rateMaxStaleHours = int.TryParse(Environment.GetEnvironmentVariable("RATE_MAX_STALE_HOURS"), out var configuredStale) ? Math.Clamp(configuredStale, 1, 168) : 24;
@@ -867,7 +873,8 @@ app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery 
 {
     if (!await IsValidRequestToken(context, antiforgery)) return Results.BadRequest(new { error = "Please refresh and try again." });
     var credentials = PaymentwingsCredentials();
-    if (credentials is null) return Results.Problem("Secure checkout is not configured yet. Please try again later.", statusCode: 503);
+    var paylioWallet = Environment.GetEnvironmentVariable("PAYLIO_WALLET_ADDRESS");
+    if (paylioActive ? string.IsNullOrWhiteSpace(paylioWallet) : credentials is null) return Results.Problem("Secure checkout is not configured yet. Please try again later.", statusCode: 503);
     using var payload = await JsonDocument.ParseAsync(context.Request.Body, cancellationToken: cancellationToken);
     var root = payload.RootElement;
     var slug = root.TryGetProperty("slug", out var slugValue) ? slugValue.GetString()?.Trim() : null;
@@ -921,13 +928,60 @@ app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery 
     insert.Parameters.AddWithValue("$rate_at", rates is null ? DBNull.Value : rates.FetchedAt.ToString("O"));
     insert.Parameters.AddWithValue("$rate_source", rates is null ? DBNull.Value : rates.Source);
     insert.Parameters.AddWithValue("$mode", CurrentMode());
-    insert.Parameters.AddWithValue("$provider", "paymentwings");
+    insert.Parameters.AddWithValue("$provider", paylioActive ? "paylio" : "paymentwings");
     insert.Parameters.AddWithValue("$name", donorName.Length == 0 ? "Kind donor" : donorName);
     insert.Parameters.AddWithValue("$anonymous", anonymous ? 1 : 0);
     insert.Parameters.AddWithValue("$tx_ref", txRef);
     insert.Parameters.AddWithValue("$email", donorEmail);
     insert.Parameters.AddWithValue("$date", DateTimeOffset.UtcNow.ToString("O"));
     var donationId = Convert.ToInt64(await insert.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
+
+    if (paylioActive)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "wallet")
+            {
+                Content = JsonContent.Create(new
+                {
+                    address = paylioWallet,
+                    // Paylio rejects non-https callbacks. Over plain-http local development the webhook is unreachable anyway, so the periodic payment re-check confirms the donation instead.
+                    callback = $"{(origin.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? origin : "https://localhost.invalid")}/api/paylio/webhook?ref={txRef}",
+                    amount = (amount / 100m).ToString("0.00", CultureInfo.InvariantCulture),
+                    currency,
+                    email = donorEmail,
+                    note = $"Kindwell {txRef}"
+                })
+            };
+            request.Headers.Add("X-API-Key", Environment.GetEnvironmentVariable("PAYLIO_API_KEY"));
+            using var response = await paylioHttp.SendAsync(request, cancellationToken);
+            using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+            var paylioData = result.RootElement;
+            var paymentId = paylioData.TryGetProperty("payment_id", out var pid) ? pid.GetString() : null;
+            var ipnToken = paylioData.TryGetProperty("ipn_token", out var tok) ? tok.GetString() : null;
+            var checkoutUrl = paylioData.TryGetProperty("checkout_url", out var cu) ? cu.GetString() : null;
+            if (!response.IsSuccessStatusCode || string.IsNullOrWhiteSpace(paymentId) || string.IsNullOrWhiteSpace(ipnToken) || string.IsNullOrWhiteSpace(checkoutUrl))
+            {
+                app.Logger.LogWarning("Paylio rejected checkout for {Currency} (HTTP {Status}).", currency, (int)response.StatusCode);
+                throw new HttpRequestException("Paylio did not return a checkout link.");
+            }
+            await using var save = db.CreateCommand();
+            save.CommandText = "UPDATE donations SET provider_transaction_id=$pid,provider_secret=$secret WHERE id=$id";
+            save.Parameters.AddWithValue("$pid", paymentId);
+            save.Parameters.AddWithValue("$secret", ipnToken);
+            save.Parameters.AddWithValue("$id", donationId);
+            await save.ExecuteNonQueryAsync(cancellationToken);
+            return Results.Ok(new { url = checkoutUrl, txRef, amount = amount / 100m, currency, campaign = title, provider = "Paylio", brands = new[] { "Visa", "Mastercard", "Apple Pay", "Google Pay" } });
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
+        {
+            await using var markFailed = db.CreateCommand();
+            markFailed.CommandText = "UPDATE donations SET status='failed' WHERE id=$id AND status='pending'";
+            markFailed.Parameters.AddWithValue("$id", donationId);
+            await markFailed.ExecuteNonQueryAsync(CancellationToken.None);
+            return Results.Problem($"We couldn't start secure checkout in {currency}. No payment was taken. Please try again shortly.", statusCode: 502);
+        }
+    }
 
     try
     {
@@ -964,7 +1018,7 @@ app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery 
         save.Parameters.AddWithValue("$tid", transactionId);
         save.Parameters.AddWithValue("$id", donationId);
         await save.ExecuteNonQueryAsync(cancellationToken);
-        return Results.Ok(new { url = checkoutLink, txRef, amount = amount / 100m, currency, campaign = title });
+        return Results.Ok(new { url = checkoutLink, txRef, amount = amount / 100m, currency, campaign = title, provider = "Paymentwings", brands = new[] { "Visa", "Mastercard", "Verve" } });
     }
     catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
     {
@@ -1025,14 +1079,43 @@ app.MapPost("/api/paymentwings/webhook", async (HttpRequest request, Cancellatio
         txRef = await lookup.ExecuteScalarAsync(cancellationToken) as string;
     }
     if (string.IsNullOrWhiteSpace(txRef)) return Results.Ok();
-    var outcome = await ConfirmPaymentwingsPayment(txRef, cancellationToken);
+    var outcome = await ConfirmDonationPayment(txRef, cancellationToken);
+    return outcome == "unverified" ? Results.StatusCode(StatusCodes.Status503ServiceUnavailable) : Results.Ok();
+});
+
+app.MapPost("/api/paylio/webhook", async (HttpRequest request, CancellationToken cancellationToken) =>
+{
+    var txRef = request.Query["ref"].ToString();
+    if (txRef.Length is 0 or > 100 || !txRef.StartsWith("kw-", StringComparison.Ordinal)) return Results.BadRequest();
+    if (request.ContentLength > 65_536) return Results.BadRequest();
+    string rawBody;
+    using (var bodyReader = new StreamReader(request.Body, Encoding.UTF8, false, 4096, true)) rawBody = await bodyReader.ReadToEndAsync(cancellationToken);
+    if (rawBody.Length > 65_536) return Results.BadRequest();
+    string? secret;
+    await using (var db = await OpenDatabase(cancellationToken))
+    {
+        await using var lookup = db.CreateCommand();
+        lookup.CommandText = "SELECT provider_secret FROM donations WHERE provider='paylio' AND provider_session_id=$ref";
+        lookup.Parameters.AddWithValue("$ref", txRef);
+        secret = await lookup.ExecuteScalarAsync(cancellationToken) as string;
+    }
+    if (string.IsNullOrWhiteSpace(secret)) return Results.NotFound();
+    // X-PayLio-Signature is the hex HMAC-SHA256 of the raw body, keyed with the payment's ipn_token.
+    var expected = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(secret), Encoding.UTF8.GetBytes(rawBody))).ToLowerInvariant();
+    if (!SecureEquals(request.Headers["X-PayLio-Signature"].ToString().Trim().ToLowerInvariant(), expected))
+    {
+        app.Logger.LogWarning("Rejected Paylio webhook with an invalid signature.");
+        return Results.Unauthorized();
+    }
+    // The payload is never trusted: the payment is re-fetched from Paylio before anything is recorded.
+    var outcome = await ConfirmDonationPayment(txRef, cancellationToken);
     return outcome == "unverified" ? Results.StatusCode(StatusCodes.Status503ServiceUnavailable) : Results.Ok();
 });
 
 app.MapGet("/api/donations/status/{txRef}", async (string txRef, CancellationToken cancellationToken) =>
 {
     if (txRef.Length > 100 || !txRef.StartsWith("kw-", StringComparison.Ordinal)) return Results.NotFound();
-    var outcome = await ConfirmPaymentwingsPayment(txRef, cancellationToken);
+    var outcome = await ConfirmDonationPayment(txRef, cancellationToken);
     if (outcome != "succeeded") return Results.Ok(new { confirmed = false, failed = outcome == "failed" });
     await using var db = await OpenDatabase(cancellationToken);
     await using var command = db.CreateCommand();
@@ -1412,6 +1495,8 @@ async Task InitializeDatabase()
 
 string CurrentMode()
 {
+    // Paylio has no sandbox: every payment is real.
+    if (paylioActive) return "live";
     // Paymentwings issues separate sandbox and live key pairs; sandbox keys run in test mode automatically.
     var key = Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY");
     return string.IsNullOrWhiteSpace(key) || key.Contains("test", StringComparison.OrdinalIgnoreCase) || key.Contains("sandbox", StringComparison.OrdinalIgnoreCase) ? "test" : "live";
@@ -1491,16 +1576,16 @@ bool IsValidEmail(string value)
     catch (FormatException) { return false; }
 }
 
-// Returns "succeeded", "failed", "pending" or "unverified" (could not be checked with Paymentwings).
-async Task<string> ConfirmPaymentwingsPayment(string txRef, CancellationToken cancellationToken)
+// Returns "succeeded", "failed", "pending" or "unverified" (could not be checked with the provider).
+async Task<string> ConfirmDonationPayment(string txRef, CancellationToken cancellationToken)
 {
     await using var db = await OpenDatabase(cancellationToken);
     await using var getDonation = db.CreateCommand();
-    getDonation.CommandText = "SELECT id,fundraiser_id,amount,status,currency,COALESCE(original_amount_minor,amount),provider_transaction_id FROM donations WHERE provider_session_id=$tx_ref";
+    getDonation.CommandText = "SELECT id,fundraiser_id,amount,status,currency,COALESCE(original_amount_minor,amount),provider_transaction_id,provider FROM donations WHERE provider_session_id=$tx_ref";
     getDonation.Parameters.AddWithValue("$tx_ref", txRef);
     long donationId, fundraiserId, amount, originalMinor;
-    string status, donationCurrency;
-    string? paymentwingsTransactionId;
+    string status, donationCurrency, provider;
+    string? providerTransactionId;
     await using (var donationReader = await getDonation.ExecuteReaderAsync(cancellationToken))
     {
         if (!await donationReader.ReadAsync(cancellationToken)) return "unknown";
@@ -1510,20 +1595,55 @@ async Task<string> ConfirmPaymentwingsPayment(string txRef, CancellationToken ca
         status = donationReader.GetString(3);
         donationCurrency = donationReader.GetString(4);
         originalMinor = donationReader.GetInt64(5);
-        paymentwingsTransactionId = donationReader.IsDBNull(6) ? null : donationReader.GetString(6);
+        providerTransactionId = donationReader.IsDBNull(6) ? null : donationReader.GetString(6);
+        provider = donationReader.GetString(7);
     }
     if (status is "succeeded" or "failed") return status;
-    if (string.IsNullOrWhiteSpace(paymentwingsTransactionId)) return "pending";
+    if (string.IsNullOrWhiteSpace(providerTransactionId)) return "pending";
 
     string verifiedStatus, verifiedCurrency;
     decimal verifiedAmount;
     string verifiedRef;
     long? chargedMinor, feeMinor, settledMinor;
     string? settlementCurrency;
+    if (provider == "paylio")
+    {
+        var apiKey = Environment.GetEnvironmentVariable("PAYLIO_API_KEY");
+        if (string.IsNullOrWhiteSpace(apiKey)) return "unverified";
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"payment-status?payment_id={Uri.EscapeDataString(providerTransactionId)}");
+            request.Headers.Add("X-API-Key", apiKey);
+            using var response = await paylioHttp.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode) return response.StatusCode == System.Net.HttpStatusCode.NotFound ? "pending" : "unverified";
+            using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+            var data = result.RootElement;
+            string? Text(string name) => data.TryGetProperty(name, out var v) && v.ValueKind != JsonValueKind.Null ? v.ToString() : null;
+            decimal? Money(string name) => decimal.TryParse(Text(name), NumberStyles.Number, CultureInfo.InvariantCulture, out var m) ? m : null;
+            var forwardStatus = (Text("forward_status") ?? "").ToLowerInvariant();
+            verifiedStatus = forwardStatus switch
+            {
+                "completed" => "successful",
+                "failed" or "canceled" or "cancelled" => "failed",
+                _ => "pending"
+            };
+            verifiedRef = providerTransactionId;
+            verifiedCurrency = Text("currency") ?? "";
+            // The requested amount is compared; `original_amount` is before fee pass-through, which Kindwell does not use.
+            verifiedAmount = Money("original_amount") ?? Money("amount") ?? -1;
+            chargedMinor = Money("amount") is { } charged ? DonationMoney.ToMinor(charged) : null;
+            feeMinor = null;
+            settledMinor = Money("forwarded_amount") is { } forwarded ? DonationMoney.ToMinor(forwarded) : null;
+            settlementCurrency = settledMinor is null ? null : "USDC";
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException) { app.Logger.LogWarning(ex, "Could not verify Paylio payment for {TxRef}.", txRef); return "unverified"; }
+    }
+    else
+    {
     try
     {
         // The lookup endpoint is public; it is only used to learn the status. The signed webhook is the source of truth for fulfilment.
-        using var response = await paymentwingsHttp.GetAsync($"api/lookup/{Uri.EscapeDataString(paymentwingsTransactionId)}", cancellationToken);
+        using var response = await paymentwingsHttp.GetAsync($"api/lookup/{Uri.EscapeDataString(providerTransactionId)}", cancellationToken);
         if (!response.IsSuccessStatusCode) return response.StatusCode == System.Net.HttpStatusCode.NotFound ? "pending" : "unverified";
         using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
         if (!result.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object) return "pending";
@@ -1537,8 +1657,9 @@ async Task<string> ConfirmPaymentwingsPayment(string txRef, CancellationToken ca
         settlementCurrency = null;
     }
     catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException) { app.Logger.LogWarning(ex, "Could not verify Paymentwings transaction {TxRef}.", txRef); return "unverified"; }
+    }
 
-    if (verifiedRef != paymentwingsTransactionId) return "unverified";
+    if (verifiedRef != providerTransactionId) return "unverified";
     if (verifiedStatus.Equals("failed", StringComparison.OrdinalIgnoreCase) || verifiedStatus.Equals("cancelled", StringComparison.OrdinalIgnoreCase) || verifiedStatus.Equals("canceled", StringComparison.OrdinalIgnoreCase) || verifiedStatus.Equals("expired", StringComparison.OrdinalIgnoreCase))
     {
         await using var markFailed = db.CreateCommand();
@@ -1550,7 +1671,7 @@ async Task<string> ConfirmPaymentwingsPayment(string txRef, CancellationToken ca
     if (!verifiedStatus.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase) && !verifiedStatus.Equals("successful", StringComparison.OrdinalIgnoreCase)) return "pending";
     if (!verifiedCurrency.Equals(donationCurrency, StringComparison.OrdinalIgnoreCase) || DonationMoney.ToMinor(verifiedAmount) != originalMinor)
     {
-        app.Logger.LogWarning("Paymentwings transaction {TxRef} did not match the expected amount or currency; not recorded.", txRef);
+        app.Logger.LogWarning("{Provider} transaction {TxRef} did not match the expected amount or currency; not recorded.", provider, txRef);
         return "unverified";
     }
 
@@ -1566,7 +1687,7 @@ async Task<string> ConfirmPaymentwingsPayment(string txRef, CancellationToken ca
         """;
     confirm.Parameters.AddWithValue("$id", donationId);
     confirm.Parameters.AddWithValue("$paid_at", paidAt);
-    confirm.Parameters.AddWithValue("$provider_id", (object?)paymentwingsTransactionId ?? DBNull.Value);
+    confirm.Parameters.AddWithValue("$provider_id", (object?)providerTransactionId ?? DBNull.Value);
     confirm.Parameters.AddWithValue("$charged", (object?)chargedMinor ?? DBNull.Value);
     confirm.Parameters.AddWithValue("$charged_currency", verifiedCurrency.ToUpperInvariant());
     confirm.Parameters.AddWithValue("$fee", (object?)feeMinor ?? DBNull.Value);

@@ -21,3 +21,7 @@ services:
         sync: false
       - key: PAYMENTWINGS_WEBHOOK_KEY
         sync: false
+      - key: PAYLIO_API_KEY
+        sync: false
+      - key: PAYLIO_WALLET_ADDRESS
+        sync: false
