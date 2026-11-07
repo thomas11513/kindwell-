@@ -208,7 +208,14 @@ function openDonation(campaign) {
   root.innerHTML = `<div class="modal-backdrop" role="presentation"><section class="auth-wrap" role="dialog" aria-modal="true" aria-labelledby="donate-title"><div class="auth-panel"><button type="button" class="modal-close" aria-label="Close donation window">×</button><h1 id="donate-title">Donate</h1><p>Your gift will support “${esc(campaign.title)}”.</p><form id="donation-form"><label for="donor-currency">Currency</label><select id="donor-currency"><option value="USD">USD</option></select><div class="payment-options" id="amount-options"></div><label class="sr-only" for="custom-amount">Custom gift amount</label><div class="donate-custom"><span id="currency-symbol">$</span><input id="custom-amount" type="number" min="1" max="100000000" step="0.01" placeholder="Enter another amount" inputmode="decimal"></div><p class="secure-copy" id="usd-estimate" aria-live="polite"></p><label for="donor-name">Name (optional)</label><input id="donor-name" maxlength="80" placeholder="Your name"><label for="donor-email">Email (for your payment receipt)</label><input id="donor-email" type="email" maxlength="254" required autocomplete="email" placeholder="you@example.com">  <div class="form-checks"><label><input id="anonymous" type="checkbox"> Give anonymously</label></div><div class="card-payment-choice"><span aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/></svg></span><span><strong>Card</strong><small>You'll continue to Paymentwings' secure hosted checkout. Kindwell never asks for or receives your card number, expiry, CVV, PIN, or one-time code.</small></span></div><button class="button" type="submit">Continue to secure card checkout</button><p class="notice" id="donate-error" role="alert"></p></form></div></section></div>`;
   root.querySelector(".card-payment-choice small").textContent = "Continue to Paylio's hosted checkout. Paylio may offer a choice of providers. Kindwell never asks for or receives your card number, expiry, CVV, PIN, or one-time code.";
   root.querySelector("#custom-amount").max = "10000";
+  root.querySelector("#donation-form > button[type=submit]").textContent = "Donate securely";
+  let closed = false;
+  let checkoutWindow = null;
+  let pollTimer = null;
   const closeDialog = () => {
+    closed = true;
+    clearTimeout(pollTimer);
+    if (checkoutWindow && !checkoutWindow.closed) checkoutWindow.close();
     root.innerHTML = "";
     document.body.style.overflow = "";
     document.removeEventListener("keydown", handleEscape);
@@ -244,15 +251,71 @@ function openDonation(campaign) {
   }).catch(() => { rates = null; });
   root.querySelector(".modal-close").addEventListener("click", closeDialog);
   root.querySelector(".modal-backdrop").addEventListener("click", event => { if (event.target.classList.contains("modal-backdrop")) closeDialog(); });
+  const waitForPayment = order => {
+    root.querySelector(".auth-panel").innerHTML = `<button type="button" class="modal-close" aria-label="Close donation window">×</button><h1 id="donate-title">Complete your payment</h1><p>${esc(formatCurrency(Math.round(order.amount * 100), order.currency))} to “${esc(order.campaign)}”</p><p class="secure-copy">Complete your payment in Paylio's separate secure window. Kindwell never receives your card details or verification codes. Paylio may offer different providers.</p><p id="checkout-status" role="status" aria-live="polite">Waiting for Paylio to confirm your payment.</p><a class="button" href="${esc(order.url)}" target="_blank" rel="noopener noreferrer">Open Paylio checkout</a><button type="button" class="button button-light" id="check-payment">Check payment status</button><button type="button" class="button button-light" id="close-payment">Close</button>`;
+    const status = root.querySelector("#checkout-status");
+    const checkButton = root.querySelector("#check-payment");
+    const checkoutLink = root.querySelector("a.button");
+    const deadline = Date.now() + 10 * 60 * 1000;
+    let checking = false;
+    let finished = false;
+    const check = async () => {
+      if (closed || checking || finished) return;
+      clearTimeout(pollTimer);
+      checking = true;
+      checkButton.disabled = true;
+      try {
+        const result = await request(`/api/donations/status/${encodeURIComponent(order.txRef)}`);
+        if (closed) return;
+        if (result.confirmed) {
+          finished = true;
+          status.textContent = `Your ${formatCurrency(result.originalAmount, result.currency)} gift to ${result.campaign} is confirmed. Thank you!`;
+          checkoutLink.remove();
+          checkButton.remove();
+          if (checkoutWindow && !checkoutWindow.closed) checkoutWindow.close();
+        } else if (result.failed) {
+          finished = true;
+          status.textContent = "Paylio could not complete this payment. No gift was recorded.";
+          checkoutLink.remove();
+          checkButton.remove();
+        } else {
+          status.textContent = "Waiting for Paylio to confirm your payment. Closing this window does not cancel the payment.";
+        }
+      } catch {
+        if (!closed) status.textContent = "We couldn't check the payment status. You can try again; your gift will only appear after Paylio confirms it.";
+      } finally {
+        checking = false;
+        if (!closed && !finished) {
+          checkButton.disabled = false;
+          if (Date.now() < deadline) pollTimer = setTimeout(check, 5000);
+          else status.textContent = "Automatic status checks have stopped. Use Check payment status to try again.";
+        }
+      }
+    };
+    root.querySelector(".modal-close").addEventListener("click", closeDialog);
+    root.querySelector("#close-payment").addEventListener("click", closeDialog);
+    checkButton.addEventListener("click", check);
+    if (!checkoutWindow) status.textContent = "Your browser blocked the Paylio window. Use Open Paylio checkout to continue.";
+    pollTimer = setTimeout(check, 5000);
+  };
   const cardCheckout = async (amount, button, error) => {
-    button.disabled = true; button.textContent = "Opening secure card checkout…"; error.textContent = "";
+    checkoutWindow = window.open("", "_blank", "popup,width=480,height=760");
+    if (checkoutWindow) checkoutWindow.opener = null;
+    button.disabled = true; button.textContent = "Opening secure checkout…"; error.textContent = "";
     try {
       const result = await request("/api/donations/checkout", { method: "POST", body: JSON.stringify({ slug: campaign.slug, amount, currency: currencySelect.value, name: root.querySelector("#donor-name").value, email: root.querySelector("#donor-email").value, anonymous: root.querySelector("#anonymous").checked }) });
-      // Returning with the back button restores this page from cache; reset the button so the donor can retry.
-      window.addEventListener("pageshow", () => { button.disabled = false; button.textContent = "Continue to secure card checkout"; }, { once: true });
-      if (!result.url) throw new Error("The payment partner did not return a checkout link. Please try again later.");
-      location.assign(result.url);
-    } catch (issue) { error.textContent = issue.message; button.disabled = false; button.textContent = "Continue to secure card checkout"; }
+      if (closed) return;
+      if (!result.url || !result.txRef) throw new Error("The payment partner did not return a checkout link. Please try again later.");
+      if (checkoutWindow && !checkoutWindow.closed) {
+        try { checkoutWindow.location.replace(result.url); }
+        catch (issue) { console.warn("Could not open Paylio checkout window:", issue); checkoutWindow.close(); checkoutWindow = null; }
+      } else checkoutWindow = null;
+      waitForPayment(result);
+    } catch (issue) {
+      if (checkoutWindow && !checkoutWindow.closed) checkoutWindow.close();
+      checkoutWindow = null;
+      if (!closed) { error.textContent = issue.message; button.disabled = false; button.textContent = "Donate securely"; }
+    }
   };
   root.querySelector("#donation-form").addEventListener("submit", event => {
     event.preventDefault();

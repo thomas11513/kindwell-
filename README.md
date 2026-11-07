@@ -47,7 +47,7 @@ The Comments tab lets the administrator review and delete comments. New comments
 
 ## Paylio hosted checkout
 
-New donations use Paylio's hosted checkout. Kindwell offers Card without a payment-method selector, but Paylio may show its own provider choices, including non-card options; the Paylio API does not document a card-only restriction for those choices. Paylio settles in USDC on Polygon, not directly into a bank account. Confirm the wallet and fees in Paylio before accepting donations.
+New donations use Paylio's hosted checkout in a separate window while Kindwell displays payment status. If the browser blocks the window, the donor can open the checkout using the link shown. Closing the Kindwell dialog does not cancel an already-created payment. Kindwell offers Card without a payment-method selector, but Paylio may show its own provider choices, including non-card options; the Paylio API does not document a card-only restriction for those choices. Paylio settles in USDC on Polygon, not directly into a bank account. Confirm the wallet and fees in Paylio before accepting donations.
 
 Set these server-side values (never commit keys):
 
