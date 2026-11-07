@@ -207,7 +207,7 @@ app.MapGet("/api/fundraisers/{slug}/comments", async (string slug, int? page, Ca
     command.Parameters.AddWithValue("$slug", slug);
     if (await command.ExecuteScalarAsync(cancellationToken) is null) return Results.NotFound(new { error = "This fundraiser could not be found." });
     command.CommandText = """
-        SELECT c.id,c.body,c.created_at FROM fundraiser_comments c
+        SELECT c.id,c.name,c.body,c.created_at FROM fundraiser_comments c
         JOIN fundraisers f ON f.id=c.fundraiser_id
         WHERE f.slug=$slug AND f.published=1 ORDER BY c.id DESC LIMIT 21 OFFSET $offset
         """;
@@ -215,7 +215,7 @@ app.MapGet("/api/fundraisers/{slug}/comments", async (string slug, int? page, Ca
     var comments = new List<CommentResponse>();
     await using var reader = await command.ExecuteReaderAsync(cancellationToken);
     while (await reader.ReadAsync(cancellationToken))
-        comments.Add(new CommentResponse(reader.GetInt64(0), reader.GetString(1), DateTimeOffset.Parse(reader.GetString(2), CultureInfo.InvariantCulture)));
+        comments.Add(new CommentResponse(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), DateTimeOffset.Parse(reader.GetString(3), CultureInfo.InvariantCulture)));
     var hasMore = comments.Count > 20;
     if (hasMore) comments.RemoveAt(20);
     return Results.Ok(new { items = comments, page = currentPage, hasMore });
@@ -226,14 +226,14 @@ app.MapGet("/api/fundraisers/{slug}/comments/{id:long}", async (string slug, lon
     await using var db = await OpenDatabase(cancellationToken);
     await using var command = db.CreateCommand();
     command.CommandText = """
-        SELECT c.id,c.body,c.created_at FROM fundraiser_comments c JOIN fundraisers f ON f.id=c.fundraiser_id
+        SELECT c.id,c.name,c.body,c.created_at FROM fundraiser_comments c JOIN fundraisers f ON f.id=c.fundraiser_id
         WHERE f.slug=$slug AND f.published=1 AND c.id=$id
         """;
     command.Parameters.AddWithValue("$slug", slug);
     command.Parameters.AddWithValue("$id", id);
     await using var reader = await command.ExecuteReaderAsync(cancellationToken);
     if (!await reader.ReadAsync(cancellationToken)) return Results.NotFound();
-    return Results.Ok(new CommentResponse(reader.GetInt64(0), reader.GetString(1), DateTimeOffset.Parse(reader.GetString(2), CultureInfo.InvariantCulture)));
+    return Results.Ok(new CommentResponse(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), DateTimeOffset.Parse(reader.GetString(3), CultureInfo.InvariantCulture)));
 }).WithSummary("Get a public fundraiser comment");
 
 app.MapPost("/api/fundraisers/{slug}/comments", async (string slug, HttpContext context, IAntiforgery antiforgery, CancellationToken cancellationToken) =>
@@ -246,25 +246,25 @@ app.MapPost("/api/fundraisers/{slug}/comments", async (string slug, HttpContext 
     CreateCommentRequest? input;
     try { input = await context.Request.ReadFromJsonAsync<CreateCommentRequest>(cancellationToken); }
     catch (JsonException) { return Results.BadRequest(new { error = "Check your comment and try again." }); }
-    var email = input?.Email?.Trim() ?? "";
+    var name = input?.Name?.Trim() ?? "";
     var body = input?.Body?.Trim() ?? "";
-    if (!IsValidEmail(email)) return Results.BadRequest(new { error = "Enter a valid email address." });
+    if (name.Length is < 1 or > 100) return Results.BadRequest(new { error = "Enter a name of up to 100 characters." });
     if (body.Length is < 1 or > 2000) return Results.BadRequest(new { error = "Enter a comment of up to 2,000 characters." });
     var createdAt = DateTimeOffset.UtcNow;
     await using var db = await OpenDatabase(cancellationToken);
     await using var command = db.CreateCommand();
     command.CommandText = """
-        INSERT INTO fundraiser_comments(fundraiser_id,email,body,created_at)
-        SELECT id,$email,$body,$created FROM fundraisers WHERE slug=$slug AND published=1;
+        INSERT INTO fundraiser_comments(fundraiser_id,email,name,body,created_at)
+        SELECT id,'',$name,$body,$created FROM fundraisers WHERE slug=$slug AND published=1;
         """;
     command.Parameters.AddWithValue("$slug", slug);
-    command.Parameters.AddWithValue("$email", email);
+    command.Parameters.AddWithValue("$name", name);
     command.Parameters.AddWithValue("$body", body);
     command.Parameters.AddWithValue("$created", createdAt.ToString("O"));
     if (await command.ExecuteNonQueryAsync(cancellationToken) == 0) return Results.NotFound(new { error = "This fundraiser could not be found." });
     command.CommandText = "SELECT last_insert_rowid()";
     var id = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
-    return Results.Created($"/api/fundraisers/{Uri.EscapeDataString(slug)}/comments/{id}", new CommentResponse(id, body, createdAt));
+    return Results.Created($"/api/fundraisers/{Uri.EscapeDataString(slug)}/comments/{id}", new CommentResponse(id, name, body, createdAt));
 }).RequireRateLimiting("comments").WithSummary("Post a fundraiser comment");
 
 app.MapGet("/api/people/search", async (string? q, int page = 1, int pageSize = 12) =>
@@ -646,7 +646,7 @@ admin.MapGet("/comments", async (int? page, CancellationToken cancellationToken)
     await using var db = await OpenDatabase(cancellationToken);
     await using var command = db.CreateCommand();
     command.CommandText = """
-        SELECT c.id,f.title,f.slug,c.email,c.body,c.created_at,f.published
+        SELECT c.id,f.title,f.slug,c.name,c.email,c.body,c.created_at,f.published
         FROM fundraiser_comments c JOIN fundraisers f ON f.id=c.fundraiser_id
         ORDER BY c.id DESC LIMIT 21 OFFSET $offset
         """;
@@ -654,7 +654,7 @@ admin.MapGet("/comments", async (int? page, CancellationToken cancellationToken)
     var comments = new List<AdminCommentResponse>();
     await using var reader = await command.ExecuteReaderAsync(cancellationToken);
     while (await reader.ReadAsync(cancellationToken))
-        comments.Add(new AdminCommentResponse(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), DateTimeOffset.Parse(reader.GetString(5), CultureInfo.InvariantCulture), reader.GetInt64(6) == 1));
+        comments.Add(new AdminCommentResponse(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.GetString(5), DateTimeOffset.Parse(reader.GetString(6), CultureInfo.InvariantCulture), reader.GetInt64(7) == 1));
     var hasMore = comments.Count > 20;
     if (hasMore) comments.RemoveAt(20);
     return Results.Ok(new { items = comments, page = currentPage, hasMore });
@@ -1409,7 +1409,7 @@ async Task InitializeDatabase()
         CREATE TABLE IF NOT EXISTS exchange_rate_snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT,source TEXT NOT NULL,fetched_at TEXT NOT NULL,provider_updated_at TEXT,rates_json TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS campaign_updates(id INTEGER PRIMARY KEY AUTOINCREMENT,fundraiser_id INTEGER NOT NULL REFERENCES fundraisers(id) ON DELETE CASCADE,title TEXT NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_campaign_updates_fundraiser_date ON campaign_updates(fundraiser_id,created_at DESC);
-        CREATE TABLE IF NOT EXISTS fundraiser_comments(id INTEGER PRIMARY KEY AUTOINCREMENT,fundraiser_id INTEGER NOT NULL REFERENCES fundraisers(id) ON DELETE CASCADE,email TEXT NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS fundraiser_comments(id INTEGER PRIMARY KEY AUTOINCREMENT,fundraiser_id INTEGER NOT NULL REFERENCES fundraisers(id) ON DELETE CASCADE,email TEXT NOT NULL,name TEXT NOT NULL DEFAULT 'Kindwell visitor',body TEXT NOT NULL,created_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_fundraiser_comments_fundraiser_id ON fundraiser_comments(fundraiser_id,id DESC);
         CREATE TABLE IF NOT EXISTS ledger_transactions(id INTEGER PRIMARY KEY AUTOINCREMENT,donation_id INTEGER NOT NULL UNIQUE REFERENCES donations(id) ON DELETE RESTRICT,currency TEXT NOT NULL CHECK(currency='usd'),amount INTEGER NOT NULL CHECK(amount>0),occurred_at TEXT NOT NULL,provider_reference TEXT,created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS ledger_postings(id INTEGER PRIMARY KEY AUTOINCREMENT,transaction_id INTEGER NOT NULL REFERENCES ledger_transactions(id) ON DELETE RESTRICT,account_code TEXT NOT NULL CHECK(account_code IN ('processor_clearing','campaign_funds_payable')),side TEXT NOT NULL CHECK(side IN ('debit','credit')),amount INTEGER NOT NULL CHECK(amount>0),UNIQUE(transaction_id,account_code,side));
@@ -1425,6 +1425,19 @@ async Task InitializeDatabase()
         """;
     await command.ExecuteNonQueryAsync();
     await command.DisposeAsync();
+    var commentColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    await using (var columnQuery = db.CreateCommand())
+    {
+        columnQuery.CommandText = "PRAGMA table_info(fundraiser_comments)";
+        await using var columnReader = await columnQuery.ExecuteReaderAsync();
+        while (await columnReader.ReadAsync()) commentColumns.Add(columnReader.GetString(1));
+    }
+    if (!commentColumns.Contains("name"))
+    {
+        await using var addName = db.CreateCommand();
+        addName.CommandText = "ALTER TABLE fundraiser_comments ADD COLUMN name TEXT NOT NULL DEFAULT 'Kindwell visitor'";
+        await addName.ExecuteNonQueryAsync();
+    }
     var donationColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     await using (var columnQuery = db.CreateCommand())
     {
@@ -1953,10 +1966,10 @@ object ReadFundraiser(SqliteDataReader reader)
 
 record FundraiserInput(string Title, string Summary, string Story, string Image, long Goal, long ReportedRaised, long ReportedDonationCount, bool Published, bool Featured, string Category, string OrganizerName, string OrganizerLocation, string OrganizerProfileImage, string OrganizerBio);
 record CampaignUpdateInput(string Title, string Body);
-/// <summary>Comment text and a private contact email supplied by a visitor.</summary>
-sealed record CreateCommentRequest(string? Email, string? Body);
-/// <summary>A public comment without the author's email address.</summary>
-sealed record CommentResponse(long Id, string Body, DateTimeOffset CreatedAt);
-/// <summary>A comment and its private contact email for administrators.</summary>
-sealed record AdminCommentResponse(long Id, string Campaign, string Slug, string Email, string Body, DateTimeOffset CreatedAt, bool Published);
+/// <summary>Comment text and public name supplied by a visitor.</summary>
+sealed record CreateCommentRequest(string? Name, string? Body);
+/// <summary>A public comment and its author's name.</summary>
+sealed record CommentResponse(long Id, string Name, string Body, DateTimeOffset CreatedAt);
+/// <summary>A comment for administrators, including any legacy private email.</summary>
+sealed record AdminCommentResponse(long Id, string Campaign, string Slug, string Name, string Email, string Body, DateTimeOffset CreatedAt, bool Published);
 record SeedCampaign(string Title, string Summary, string Story, string Image, long Goal, string Category);

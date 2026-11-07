@@ -173,12 +173,12 @@ async function renderDetail(slug) {
 
 function setupComments(slug) {
   const endpoint = `/api/fundraisers/${encodeURIComponent(slug)}/comments`;
-  document.querySelector(".detail-main").insertAdjacentHTML("beforeend", `<section class="comments-section"><h2>Comments</h2><form id="comment-form" class="admin-form"><label for="comment-email">Email</label><input id="comment-email" type="email" maxlength="254" autocomplete="email" required><label for="comment-body">Your comment</label><textarea id="comment-body" maxlength="2000" required></textarea><p class="donor-count">Your comment is public and shown as Kindwell visitor. Your email is private and visible to the administrator. Please don't include private information in your comment.</p><button class="button" type="submit">Send comment</button><p class="notice" id="comment-notice" role="status" aria-live="polite"></p></form><div id="comments-list" aria-live="polite"></div><div class="report-presets" id="comments-pagination"></div></section>`);
+  document.querySelector(".detail-main").insertAdjacentHTML("beforeend", `<section class="comments-section"><h2>Comments</h2><form id="comment-form" class="admin-form"><label for="comment-name">Your name</label><input id="comment-name" maxlength="100" autocomplete="name" required><label for="comment-body">Your comment</label><textarea id="comment-body" maxlength="2000" required></textarea><p class="donor-count">No account or email is needed. Your name and comment are public, so please don't include private information.</p><button class="button" type="submit">Send comment</button><p class="notice" id="comment-notice" role="status" aria-live="polite"></p></form><div id="comments-list" aria-live="polite"></div><div class="report-presets" id="comments-pagination"></div></section>`);
   const notice = document.querySelector("#comment-notice");
   const loadComments = async (page = 1) => {
     try {
       const result = await request(`${endpoint}?page=${page}`);
-      document.querySelector("#comments-list").innerHTML = result.items.map(item => `<article class="comment"><strong>Kindwell visitor</strong> <time datetime="${esc(item.createdAt)}">${esc(new Date(item.createdAt).toLocaleString())}</time><p>${esc(item.body)}</p></article>`).join("") || `<p class="donor-count">No comments yet. Be the first to share a message.</p>`;
+      document.querySelector("#comments-list").innerHTML = result.items.map(item => `<article class="comment"><div class="comment-header"><span class="comment-avatar" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-4 3-6 7-6s7 2 7 6"/></svg></span><div class="comment-author"><strong>${esc(item.name)}</strong><time datetime="${esc(item.createdAt)}">${esc(new Date(item.createdAt).toLocaleString())}</time></div></div><p>${esc(item.body)}</p></article>`).join("") || `<p class="donor-count">No comments yet. Be the first to share a message.</p>`;
       const pagination = document.querySelector("#comments-pagination");
       pagination.innerHTML = `<button type="button" data-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>Previous</button><span>Page ${page}</span><button type="button" data-page="${page + 1}" ${result.hasMore ? "" : "disabled"}>Next</button>`;
       pagination.querySelectorAll("button").forEach(button => button.addEventListener("click", () => void loadComments(Number(button.dataset.page))));
@@ -191,7 +191,7 @@ function setupComments(slug) {
     button.disabled = true;
     notice.textContent = "Sending comment...";
     try {
-      await request(endpoint, { method: "POST", body: JSON.stringify({ email: document.querySelector("#comment-email").value, body: document.querySelector("#comment-body").value }) });
+      await request(endpoint, { method: "POST", body: JSON.stringify({ name: document.querySelector("#comment-name").value, body: document.querySelector("#comment-body").value }) });
       form.reset();
       notice.textContent = "Your comment has been posted.";
       await loadComments(1);
@@ -199,7 +199,7 @@ function setupComments(slug) {
     finally { button.disabled = false; }
   });
   void loadComments();
-  if (location.hash === "#comment-form") document.querySelector("#comment-email").focus();
+  if (location.hash === "#comment-form") document.querySelector("#comment-name").focus();
 }
 
 function openDonation(campaign) {
@@ -566,14 +566,14 @@ async function renderDashboard() {
   };
   let financeLoaded = false;
   document.querySelector(".admin-tabs").insertAdjacentHTML("beforeend", `<button data-tab="comments">Comments</button>`);
-  document.querySelector("#finance-tab").insertAdjacentHTML("afterend", `<section id="comments-tab" hidden><div class="admin-panel"><h2>Comment moderation</h2><p>Emails are private and only visible to administrators.</p><p class="notice" id="admin-comments-notice" role="status" aria-live="polite"></p><div id="admin-comments-list"></div><div class="report-presets" id="admin-comments-pagination"></div></div></section>`);
+  document.querySelector("#finance-tab").insertAdjacentHTML("afterend", `<section id="comments-tab" hidden><div class="admin-panel"><h2>Comment moderation</h2><p>Names and comments are public. Email addresses collected for older comments remain private.</p><p class="notice" id="admin-comments-notice" role="status" aria-live="polite"></p><div id="admin-comments-list"></div><div class="report-presets" id="admin-comments-pagination"></div></div></section>`);
   let commentsLoaded = false;
   const loadAdminComments = async (page = 1) => {
     const notice = document.querySelector("#admin-comments-notice");
     notice.textContent = "Loading comments...";
     try {
       const result = await request(`/api/admin/comments?page=${page}`);
-      document.querySelector("#admin-comments-list").innerHTML = result.items.map(item => `<article class="comment"><strong>${esc(item.campaign)}</strong>${item.published ? "" : " (draft)"}<br><small>${esc(item.email)} · ${esc(new Date(item.createdAt).toLocaleString())}</small><p>${esc(item.body)}</p><button type="button" data-delete-comment="${item.id}">Delete comment</button></article>`).join("") || `<p class="donor-count">No comments on this page.</p>`;
+      document.querySelector("#admin-comments-list").innerHTML = result.items.map(item => `<article class="comment"><strong>${esc(item.campaign)}</strong>${item.published ? "" : " (draft)"}<br><small>${esc(item.name)}${item.email ? ` · ${esc(item.email)}` : ""} · ${esc(new Date(item.createdAt).toLocaleString())}</small><p>${esc(item.body)}</p><button type="button" data-delete-comment="${item.id}">Delete comment</button></article>`).join("") || `<p class="donor-count">No comments on this page.</p>`;
       document.querySelectorAll("[data-delete-comment]").forEach(button => button.addEventListener("click", async () => {
         if (!confirm("Delete this comment?")) return;
         button.disabled = true;
@@ -776,7 +776,7 @@ async function renderInfoPage(kind) {
   const isPrivacy = kind === "privacy";
   const title = isPrivacy ? "Privacy, with care" : "Terms of service";
   appRoot.innerHTML = `${header()}<main class="page-wrap page-shell"><div class="detail-main"><span class="eyebrow">Kindwell policies</span><h1>${title}</h1><p class="detail-story">${isPrivacy ? "Kindwell collects only the information needed to operate this service. Donation payments are handled by our payment partner; Kindwell never receives or stores your full card number or security code. We retain a donor name (or anonymous preference), gift amount, campaign, and payment status for transparent recordkeeping. We do not sell personal information. Contact hello@kindwell.care with privacy questions or requests." : "Kindwell provides community fundraising pages operated by a single administrator. Gifts are processed by our payment partner and are subject to its terms and payment processing charges. A gift is recorded as confirmed only after the payment provider verifies it. Refund requests are reviewed individually by contacting hello@kindwell.care. Campaign stories and goals are maintained by the Kindwell administrator. Kindwell may update these terms as the service evolves."}</p></div></main>${footer()}`;
-  if (isPrivacy) document.querySelector(".detail-main").insertAdjacentHTML("beforeend", `<p class="detail-story">Fundraiser comments are public and appear as Kindwell visitor. We store the email address submitted with each comment for administration; it is not shown publicly. Administrators can remove comments. Please do not include private information in a comment.</p>`);
+  if (isPrivacy) document.querySelector(".detail-main").insertAdjacentHTML("beforeend", `<p class="detail-story">The name and text submitted with a fundraiser comment are public. Email addresses collected for older comments remain stored for administration and are not shown publicly. Administrators can remove comments. Please do not include private information in your name or comment.</p>`);
   document.title = `${title} | Kindwell`; setupMenu();
 }
 

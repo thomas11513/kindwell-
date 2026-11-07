@@ -21,7 +21,7 @@ The application uses ASP.NET Core 8, SQLite, and a small browser-native JavaScri
 - [x] SQLite database with startup schema migrations and persistent campaign, donation, and update records.
 - [x] Server-enforced administrator access using a rate-limited login, role-protected HTTP-only cookie, and antiforgery tokens.
 - [x] Administrator campaign create, edit, publish, unpublish, delete-protection, image upload, and update workflows.
-- [x] Public fundraiser comments with private email addresses, rate-limited submissions, and paginated administrator moderation and deletion.
+- [x] Public fundraiser comments with names, rate-limited submissions, and paginated administrator moderation and deletion.
 - [x] Payment history with status/date filtering and pagination; only provider-confirmed payments count as successful.
 - [x] Immutable payment ledger entries with balanced debit/credit postings, confirmation timestamps, and idempotent payment confirmation.
 - [x] Weekly, monthly, all-time, and custom UTC financial reports with daily totals and CSV export.
@@ -43,7 +43,7 @@ dotnet run --urls http://localhost:5080
 
 Open `/admin` to manage campaign drafts, publishing, images, goals, and donation records. Admin APIs require a role-protected, HTTP-only, same-site cookie and antiforgery token. Login is rate limited. For deployment, use HTTPS; the admin cookie is marked Secure outside Development.
 
-The Comments tab lets the administrator review and delete comments. Comment text is public; the submitted email address is stored for administration and is not included in public responses. Comments can contain information entered by visitors, so visitors should not include private details. Comment records are deleted when their fundraiser is deleted.
+The Comments tab lets the administrator review and delete comments. New comments require a name and comment text, both public. Older comments remain attributed to "Kindwell visitor"; email addresses collected for those comments remain private and visible to administrators. Visitors should not include private details in names or comments. Comment records are deleted when their fundraiser is deleted.
 
 ## Paylio hosted checkout
 
