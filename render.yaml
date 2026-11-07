@@ -15,6 +15,12 @@ services:
         sync: false
       - key: ADMIN_PASSWORD
         sync: false
+      - key: ONEPAY_API_KEY
+        sync: false
+      - key: ONEPAY_WEBHOOK_SECRET
+        sync: false
+      - key: ONEPAY_CHECKOUT_HOST
+        sync: false
       - key: PAYMENTWINGS_PUBLIC_KEY
         sync: false
       - key: PAYMENTWINGS_SECRET_KEY

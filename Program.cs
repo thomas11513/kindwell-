@@ -31,6 +31,17 @@ builder.Services.AddRateLimiter(options => options.AddPolicy("auth", context => 
     QueueLimit = 0,
     AutoReplenishment = true
 })));
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("comments", context => RateLimitPartition.GetFixedWindowLimiter(context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
+    {
+        PermitLimit = 5,
+        Window = TimeSpan.FromMinutes(1),
+        QueueLimit = 0,
+        AutoReplenishment = true
+    }));
+});
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(options =>
 {
     options.Cookie.Name = "kindwell.admin";
@@ -53,15 +64,12 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
 builder.Services.AddAuthorization(options => options.AddPolicy("Administrator", policy => policy.RequireRole("Administrator")));
 
 var paymentwingsHttp = new HttpClient { BaseAddress = new Uri("https://api.paymentwings.com"), Timeout = TimeSpan.FromSeconds(20) };
+var onePayHttp = new HttpClient { BaseAddress = new Uri("https://api.1pay.cx/"), Timeout = TimeSpan.FromSeconds(20) };
 var app = builder.Build();
 await InitializeDatabase();
-// Paylio (https://paylio.org) is a hosted card checkout: the donor enters card details on Paylio's own page and Kindwell receives a signed webhook. When configured, it powers the "Card" donation method instead of Paymentwings.
+// Retained to verify donations created before the 1pay.cx checkout migration.
 var paylioHttp = new HttpClient { BaseAddress = new Uri("https://paylio.org/api/v1/"), Timeout = TimeSpan.FromSeconds(20) };
-var paylioActive = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PAYLIO_API_KEY"));
-var paylioCurrencies = new HashSet<string>(["USD", "EUR", "CAD", "INR"]);
 IReadOnlyList<string> donationCurrencies = CurrencyRules.ParseAllowed(Environment.GetEnvironmentVariable("DONATION_CURRENCIES"));
-// Paylio can only charge USD, EUR, CAD and INR, so other currencies are not offered while it is the active provider for cards.
-if (paylioActive) donationCurrencies = donationCurrencies.Where(paylioCurrencies.Contains).ToList();
 if (donationCurrencies.Count == 0) donationCurrencies = ["USD"];
 var rateCacheMinutes = int.TryParse(Environment.GetEnvironmentVariable("RATE_CACHE_MINUTES"), out var configuredCache) ? Math.Clamp(configuredCache, 1, 1440) : 60;
 var rateMaxStaleHours = int.TryParse(Environment.GetEnvironmentVariable("RATE_MAX_STALE_HOURS"), out var configuredStale) ? Math.Clamp(configuredStale, 1, 168) : 24;
@@ -187,6 +195,75 @@ app.MapGet("/api/fundraisers/{slug}", async (string slug) =>
     while (await updatesReader.ReadAsync()) updates.Add(new { title = updatesReader.GetString(0), body = updatesReader.GetString(1), date = updatesReader.GetString(2) });
     return Results.Ok(new { campaign, recentDonations = donations, updates });
 });
+
+app.MapGet("/api/fundraisers/{slug}/comments", async (string slug, int? page, CancellationToken cancellationToken) =>
+{
+    var currentPage = Math.Max(page ?? 1, 1);
+    await using var db = await OpenDatabase(cancellationToken);
+    await using var command = db.CreateCommand();
+    command.CommandText = "SELECT 1 FROM fundraisers WHERE slug=$slug AND published=1";
+    command.Parameters.AddWithValue("$slug", slug);
+    if (await command.ExecuteScalarAsync(cancellationToken) is null) return Results.NotFound(new { error = "This fundraiser could not be found." });
+    command.CommandText = """
+        SELECT c.id,c.body,c.created_at FROM fundraiser_comments c
+        JOIN fundraisers f ON f.id=c.fundraiser_id
+        WHERE f.slug=$slug AND f.published=1 ORDER BY c.id DESC LIMIT 21 OFFSET $offset
+        """;
+    command.Parameters.AddWithValue("$offset", ((long)currentPage - 1) * 20);
+    var comments = new List<CommentResponse>();
+    await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+    while (await reader.ReadAsync(cancellationToken))
+        comments.Add(new CommentResponse(reader.GetInt64(0), reader.GetString(1), DateTimeOffset.Parse(reader.GetString(2), CultureInfo.InvariantCulture)));
+    var hasMore = comments.Count > 20;
+    if (hasMore) comments.RemoveAt(20);
+    return Results.Ok(new { items = comments, page = currentPage, hasMore });
+}).WithSummary("List public fundraiser comments");
+
+app.MapGet("/api/fundraisers/{slug}/comments/{id:long}", async (string slug, long id, CancellationToken cancellationToken) =>
+{
+    await using var db = await OpenDatabase(cancellationToken);
+    await using var command = db.CreateCommand();
+    command.CommandText = """
+        SELECT c.id,c.body,c.created_at FROM fundraiser_comments c JOIN fundraisers f ON f.id=c.fundraiser_id
+        WHERE f.slug=$slug AND f.published=1 AND c.id=$id
+        """;
+    command.Parameters.AddWithValue("$slug", slug);
+    command.Parameters.AddWithValue("$id", id);
+    await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+    if (!await reader.ReadAsync(cancellationToken)) return Results.NotFound();
+    return Results.Ok(new CommentResponse(reader.GetInt64(0), reader.GetString(1), DateTimeOffset.Parse(reader.GetString(2), CultureInfo.InvariantCulture)));
+}).WithSummary("Get a public fundraiser comment");
+
+app.MapPost("/api/fundraisers/{slug}/comments", async (string slug, HttpContext context, IAntiforgery antiforgery, CancellationToken cancellationToken) =>
+{
+    var bodySize = context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>();
+    if (bodySize is { IsReadOnly: false }) bodySize.MaxRequestBodySize = 20000;
+    if (!await IsValidRequestToken(context, antiforgery)) return Results.BadRequest(new { error = "Please refresh and try again." });
+    if (!context.Request.HasJsonContentType()) return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+    if (context.Request.ContentLength > 20000) return Results.BadRequest(new { error = "Your comment is too long." });
+    CreateCommentRequest? input;
+    try { input = await context.Request.ReadFromJsonAsync<CreateCommentRequest>(cancellationToken); }
+    catch (JsonException) { return Results.BadRequest(new { error = "Check your comment and try again." }); }
+    var email = input?.Email?.Trim() ?? "";
+    var body = input?.Body?.Trim() ?? "";
+    if (!IsValidEmail(email)) return Results.BadRequest(new { error = "Enter a valid email address." });
+    if (body.Length is < 1 or > 2000) return Results.BadRequest(new { error = "Enter a comment of up to 2,000 characters." });
+    var createdAt = DateTimeOffset.UtcNow;
+    await using var db = await OpenDatabase(cancellationToken);
+    await using var command = db.CreateCommand();
+    command.CommandText = """
+        INSERT INTO fundraiser_comments(fundraiser_id,email,body,created_at)
+        SELECT id,$email,$body,$created FROM fundraisers WHERE slug=$slug AND published=1;
+        """;
+    command.Parameters.AddWithValue("$slug", slug);
+    command.Parameters.AddWithValue("$email", email);
+    command.Parameters.AddWithValue("$body", body);
+    command.Parameters.AddWithValue("$created", createdAt.ToString("O"));
+    if (await command.ExecuteNonQueryAsync(cancellationToken) == 0) return Results.NotFound(new { error = "This fundraiser could not be found." });
+    command.CommandText = "SELECT last_insert_rowid()";
+    var id = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
+    return Results.Created($"/api/fundraisers/{Uri.EscapeDataString(slug)}/comments/{id}", new CommentResponse(id, body, createdAt));
+}).RequireRateLimiting("comments").WithSummary("Post a fundraiser comment");
 
 app.MapGet("/api/people/search", async (string? q, int page = 1, int pageSize = 12) =>
 {
@@ -561,6 +638,34 @@ app.MapPost("/api/admin/logout", async (HttpContext context, IAntiforgery antifo
 }).RequireAuthorization("Administrator");
 
 var admin = app.MapGroup("/api/admin").RequireAuthorization("Administrator");
+admin.MapGet("/comments", async (int? page, CancellationToken cancellationToken) =>
+{
+    var currentPage = Math.Max(page ?? 1, 1);
+    await using var db = await OpenDatabase(cancellationToken);
+    await using var command = db.CreateCommand();
+    command.CommandText = """
+        SELECT c.id,f.title,f.slug,c.email,c.body,c.created_at,f.published
+        FROM fundraiser_comments c JOIN fundraisers f ON f.id=c.fundraiser_id
+        ORDER BY c.id DESC LIMIT 21 OFFSET $offset
+        """;
+    command.Parameters.AddWithValue("$offset", ((long)currentPage - 1) * 20);
+    var comments = new List<AdminCommentResponse>();
+    await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+    while (await reader.ReadAsync(cancellationToken))
+        comments.Add(new AdminCommentResponse(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), DateTimeOffset.Parse(reader.GetString(5), CultureInfo.InvariantCulture), reader.GetInt64(6) == 1));
+    var hasMore = comments.Count > 20;
+    if (hasMore) comments.RemoveAt(20);
+    return Results.Ok(new { items = comments, page = currentPage, hasMore });
+}).WithSummary("List comments for moderation");
+admin.MapDelete("/comments/{id:long}", async (long id, HttpContext context, IAntiforgery antiforgery, CancellationToken cancellationToken) =>
+{
+    if (!await IsValidRequestToken(context, antiforgery)) return Results.BadRequest(new { error = "Please refresh and try again." });
+    await using var db = await OpenDatabase(cancellationToken);
+    await using var command = db.CreateCommand();
+    command.CommandText = "DELETE FROM fundraiser_comments WHERE id=$id";
+    command.Parameters.AddWithValue("$id", id);
+    return await command.ExecuteNonQueryAsync(cancellationToken) == 0 ? Results.NotFound() : Results.NoContent();
+}).WithSummary("Delete a comment");
 admin.MapGet("/start-requests", async (CancellationToken cancellationToken) =>
 {
     await using var db = await OpenDatabase(cancellationToken);
@@ -872,9 +977,13 @@ admin.MapDelete("/fundraisers/{id:long}", async (long id, HttpContext context, I
 app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery antiforgery, CancellationToken cancellationToken) =>
 {
     if (!await IsValidRequestToken(context, antiforgery)) return Results.BadRequest(new { error = "Please refresh and try again." });
-    var credentials = PaymentwingsCredentials();
-    var paylioWallet = Environment.GetEnvironmentVariable("PAYLIO_WALLET_ADDRESS");
-    if (paylioActive ? string.IsNullOrWhiteSpace(paylioWallet) : credentials is null) return Results.Problem("Secure checkout is not configured yet. Please try again later.", statusCode: 503);
+    var apiKey = Environment.GetEnvironmentVariable("ONEPAY_API_KEY")?.Trim();
+    var webhookSecret = Environment.GetEnvironmentVariable("ONEPAY_WEBHOOK_SECRET");
+    var checkoutHost = Environment.GetEnvironmentVariable("ONEPAY_CHECKOUT_HOST")?.Trim().TrimEnd('.').ToLowerInvariant();
+    if (string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(webhookSecret) || string.IsNullOrWhiteSpace(checkoutHost)
+        || Uri.CheckHostName(checkoutHost) == UriHostNameType.Unknown
+        || checkoutHost.Contains('/') || checkoutHost.Contains(':'))
+        return Results.Problem("1pay.cx hosted checkout is not fully configured. Please try again later.", statusCode: 503);
     using var payload = await JsonDocument.ParseAsync(context.Request.Body, cancellationToken: cancellationToken);
     var root = payload.RootElement;
     var slug = root.TryGetProperty("slug", out var slugValue) ? slugValue.GetString()?.Trim() : null;
@@ -928,7 +1037,7 @@ app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery 
     insert.Parameters.AddWithValue("$rate_at", rates is null ? DBNull.Value : rates.FetchedAt.ToString("O"));
     insert.Parameters.AddWithValue("$rate_source", rates is null ? DBNull.Value : rates.Source);
     insert.Parameters.AddWithValue("$mode", CurrentMode());
-    insert.Parameters.AddWithValue("$provider", paylioActive ? "paylio" : "paymentwings");
+    insert.Parameters.AddWithValue("$provider", "onepay");
     insert.Parameters.AddWithValue("$name", donorName.Length == 0 ? "Kind donor" : donorName);
     insert.Parameters.AddWithValue("$anonymous", anonymous ? 1 : 0);
     insert.Parameters.AddWithValue("$tx_ref", txRef);
@@ -936,89 +1045,44 @@ app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery 
     insert.Parameters.AddWithValue("$date", DateTimeOffset.UtcNow.ToString("O"));
     var donationId = Convert.ToInt64(await insert.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
 
-    if (paylioActive)
-    {
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Post, "wallet")
-            {
-                Content = JsonContent.Create(new
-                {
-                    address = paylioWallet,
-                    // Paylio rejects non-https callbacks. Over plain-http local development the webhook is unreachable anyway, so the periodic payment re-check confirms the donation instead.
-                    callback = $"{(origin.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? origin : "https://localhost.invalid")}/api/paylio/webhook?ref={txRef}",
-                    amount = (amount / 100m).ToString("0.00", CultureInfo.InvariantCulture),
-                    currency,
-                    email = donorEmail,
-                    note = $"Kindwell {txRef}"
-                })
-            };
-            request.Headers.Add("X-API-Key", Environment.GetEnvironmentVariable("PAYLIO_API_KEY"));
-            using var response = await paylioHttp.SendAsync(request, cancellationToken);
-            using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
-            var paylioData = result.RootElement;
-            var paymentId = paylioData.TryGetProperty("payment_id", out var pid) ? pid.GetString() : null;
-            var ipnToken = paylioData.TryGetProperty("ipn_token", out var tok) ? tok.GetString() : null;
-            var checkoutUrl = paylioData.TryGetProperty("checkout_url", out var cu) ? cu.GetString() : null;
-            if (!response.IsSuccessStatusCode || string.IsNullOrWhiteSpace(paymentId) || string.IsNullOrWhiteSpace(ipnToken) || string.IsNullOrWhiteSpace(checkoutUrl))
-            {
-                app.Logger.LogWarning("Paylio rejected checkout for {Currency} (HTTP {Status}).", currency, (int)response.StatusCode);
-                throw new HttpRequestException("Paylio did not return a checkout link.");
-            }
-            await using var save = db.CreateCommand();
-            save.CommandText = "UPDATE donations SET provider_transaction_id=$pid,provider_secret=$secret WHERE id=$id";
-            save.Parameters.AddWithValue("$pid", paymentId);
-            save.Parameters.AddWithValue("$secret", ipnToken);
-            save.Parameters.AddWithValue("$id", donationId);
-            await save.ExecuteNonQueryAsync(cancellationToken);
-            return Results.Ok(new { url = checkoutUrl, txRef, amount = amount / 100m, currency, campaign = title, provider = "Paylio", brands = new[] { "Visa", "Mastercard", "Apple Pay", "Google Pay" } });
-        }
-        catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
-        {
-            await using var markFailed = db.CreateCommand();
-            markFailed.CommandText = "UPDATE donations SET status='failed' WHERE id=$id AND status='pending'";
-            markFailed.Parameters.AddWithValue("$id", donationId);
-            await markFailed.ExecuteNonQueryAsync(CancellationToken.None);
-            return Results.Problem($"We couldn't start secure checkout in {currency}. No payment was taken. Please try again shortly.", statusCode: 502);
-        }
-    }
-
     try
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v2/payment/create")
+        using var request = new HttpRequestMessage(HttpMethod.Post, "v1/payments")
         {
             Content = JsonContent.Create(new
             {
                 amount = amount / 100m,
                 currency,
-                customer_email = donorEmail,
-                success_url = $"{origin}/thank-you?tx_ref={txRef}",
-                cancel_url = $"{origin}/thank-you?tx_ref={txRef}&status=cancelled",
-                webhook_url = $"{origin}/api/paymentwings/webhook",
-                metadata = txRef
+                email = donorEmail,
+                productName = $"Kindwell donation: {title}",
+                reference = txRef,
+                redirectUrl = $"{origin}/thank-you?tx_ref={txRef}",
+                notifyUrl = $"{origin}/api/onepay/webhook",
+                method = "card"
             })
         };
-        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", credentials);
-        using var response = await paymentwingsHttp.SendAsync(request, cancellationToken);
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+        request.Headers.Add("Idempotency-Key", txRef);
+        using var response = await onePayHttp.SendAsync(request, cancellationToken);
         using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
-        string? transactionId = null, checkoutLink = null;
-        if (response.IsSuccessStatusCode && result.RootElement.TryGetProperty("ok", out var okValue) && okValue.ValueKind == JsonValueKind.True
-            && result.RootElement.TryGetProperty("data", out var dataValue))
+        var data = result.RootElement;
+        var transactionId = data.TryGetProperty("id", out var idValue) ? idValue.GetString() : null;
+        var checkoutLink = data.TryGetProperty("url", out var urlValue) ? urlValue.GetString() : null;
+        if (!response.IsSuccessStatusCode || string.IsNullOrWhiteSpace(transactionId)
+            || !Uri.TryCreate(checkoutLink, UriKind.Absolute, out var checkoutUri)
+            || checkoutUri.Scheme != Uri.UriSchemeHttps
+            || !checkoutUri.Host.Equals(checkoutHost, StringComparison.OrdinalIgnoreCase)
+            || !string.IsNullOrEmpty(checkoutUri.UserInfo))
         {
-            transactionId = dataValue.TryGetProperty("transaction_id", out var tid) ? tid.GetString() : null;
-            checkoutLink = dataValue.TryGetProperty("url", out var urlValue) ? urlValue.GetString() : null;
-        }
-        if (string.IsNullOrWhiteSpace(transactionId) || string.IsNullOrWhiteSpace(checkoutLink))
-        {
-            app.Logger.LogWarning("Paymentwings rejected checkout for {Currency} (HTTP {Status}).", currency, (int)response.StatusCode);
-            throw new HttpRequestException("Paymentwings did not return a checkout link.");
+            app.Logger.LogWarning("1pay.cx rejected checkout for {Currency} (HTTP {Status}).", currency, (int)response.StatusCode);
+            throw new HttpRequestException("1pay.cx did not return a checkout link for the configured branded host.");
         }
         await using var save = db.CreateCommand();
         save.CommandText = "UPDATE donations SET provider_transaction_id=$tid WHERE id=$id";
         save.Parameters.AddWithValue("$tid", transactionId);
         save.Parameters.AddWithValue("$id", donationId);
         await save.ExecuteNonQueryAsync(cancellationToken);
-        return Results.Ok(new { url = checkoutLink, txRef, amount = amount / 100m, currency, campaign = title, provider = "Paymentwings", brands = new[] { "Visa", "Mastercard", "Verve" } });
+        return Results.Ok(new { url = checkoutLink, txRef, amount = amount / 100m, currency, campaign = title, provider = "1pay.cx" });
     }
     catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
     {
@@ -1026,18 +1090,58 @@ app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery 
         markFailed.CommandText = "UPDATE donations SET status='failed' WHERE id=$id AND status='pending'";
         markFailed.Parameters.AddWithValue("$id", donationId);
         await markFailed.ExecuteNonQueryAsync(CancellationToken.None);
-        return Results.Problem($"We couldn't start secure checkout in {currency}. No payment was taken. Try another currency if this continues.", statusCode: 502);
+        return Results.Problem($"We couldn't start secure card checkout in {currency}. No payment was taken. Please try again shortly.", statusCode: 502);
     }
 });
 
 // Paymentwings authenticates with the public and private key as a colon-separated Bearer pair.
-string? PaymentwingsCredentials()
+app.MapPost("/api/onepay/webhook", async (HttpRequest request, CancellationToken cancellationToken) =>
 {
-    var secret = Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY");
-    var publicKey = Environment.GetEnvironmentVariable("PAYMENTWINGS_PUBLIC_KEY");
-    if (string.IsNullOrWhiteSpace(secret) || string.IsNullOrWhiteSpace(publicKey)) return null;
-    return $"{publicKey.Trim()}:{secret.Trim()}";
-}
+    var signingSecret = Environment.GetEnvironmentVariable("ONEPAY_WEBHOOK_SECRET");
+    if (string.IsNullOrWhiteSpace(signingSecret)) return Results.Problem("1pay.cx webhook verification is not configured.", statusCode: 503);
+    if (request.ContentLength > 65_536) return Results.BadRequest();
+    string rawBody;
+    using (var bodyReader = new StreamReader(request.Body, Encoding.UTF8, false, 4096, true)) rawBody = await bodyReader.ReadToEndAsync(cancellationToken);
+    if (rawBody.Length > 65_536) return Results.BadRequest();
+
+    var signature = request.Headers["X-1Pay-Signature-v2"].ToString();
+    var match = System.Text.RegularExpressions.Regex.Match(signature, "^t=([0-9]+),v1=([a-f0-9]{64})$");
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    if (!match.Success || !long.TryParse(match.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var timestamp)
+        || timestamp < now - 300 || timestamp > now + 300)
+        return Results.Unauthorized();
+    var expected = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(signingSecret), Encoding.UTF8.GetBytes($"{timestamp}.{rawBody}"))).ToLowerInvariant();
+    if (!SecureEquals(match.Groups[2].Value, expected))
+    {
+        app.Logger.LogWarning("Rejected 1pay.cx webhook with an invalid signature.");
+        return Results.Unauthorized();
+    }
+
+    string? eventName, transactionId;
+    try
+    {
+        using var body = JsonDocument.Parse(rawBody);
+        var root = body.RootElement;
+        eventName = root.TryGetProperty("event", out var eventValue) && eventValue.ValueKind == JsonValueKind.String ? eventValue.GetString() : null;
+        transactionId = root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object
+            && data.TryGetProperty("id", out var idValue) && idValue.ValueKind == JsonValueKind.String ? idValue.GetString() : null;
+    }
+    catch (JsonException) { return Results.BadRequest(); }
+    if (eventName == "webhook.test") return Results.Ok();
+    if (eventName != "payment.paid" || string.IsNullOrWhiteSpace(transactionId)) return Results.Ok();
+
+    string? txRef;
+    await using (var db = await OpenDatabase(cancellationToken))
+    {
+        await using var lookup = db.CreateCommand();
+        lookup.CommandText = "SELECT provider_session_id FROM donations WHERE provider='onepay' AND provider_transaction_id=$id";
+        lookup.Parameters.AddWithValue("$id", transactionId);
+        txRef = await lookup.ExecuteScalarAsync(cancellationToken) as string;
+    }
+    if (string.IsNullOrWhiteSpace(txRef)) return Results.Ok();
+    var outcome = await ConfirmDonationPayment(txRef, cancellationToken);
+    return outcome == "unverified" ? Results.StatusCode(StatusCodes.Status503ServiceUnavailable) : Results.Ok();
+});
 
 app.MapPost("/api/paymentwings/webhook", async (HttpRequest request, CancellationToken cancellationToken) =>
 {
@@ -1303,6 +1407,8 @@ async Task InitializeDatabase()
         CREATE TABLE IF NOT EXISTS exchange_rate_snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT,source TEXT NOT NULL,fetched_at TEXT NOT NULL,provider_updated_at TEXT,rates_json TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS campaign_updates(id INTEGER PRIMARY KEY AUTOINCREMENT,fundraiser_id INTEGER NOT NULL REFERENCES fundraisers(id) ON DELETE CASCADE,title TEXT NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_campaign_updates_fundraiser_date ON campaign_updates(fundraiser_id,created_at DESC);
+        CREATE TABLE IF NOT EXISTS fundraiser_comments(id INTEGER PRIMARY KEY AUTOINCREMENT,fundraiser_id INTEGER NOT NULL REFERENCES fundraisers(id) ON DELETE CASCADE,email TEXT NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS idx_fundraiser_comments_fundraiser_id ON fundraiser_comments(fundraiser_id,id DESC);
         CREATE TABLE IF NOT EXISTS ledger_transactions(id INTEGER PRIMARY KEY AUTOINCREMENT,donation_id INTEGER NOT NULL UNIQUE REFERENCES donations(id) ON DELETE RESTRICT,currency TEXT NOT NULL CHECK(currency='usd'),amount INTEGER NOT NULL CHECK(amount>0),occurred_at TEXT NOT NULL,provider_reference TEXT,created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS ledger_postings(id INTEGER PRIMARY KEY AUTOINCREMENT,transaction_id INTEGER NOT NULL REFERENCES ledger_transactions(id) ON DELETE RESTRICT,account_code TEXT NOT NULL CHECK(account_code IN ('processor_clearing','campaign_funds_payable')),side TEXT NOT NULL CHECK(side IN ('debit','credit')),amount INTEGER NOT NULL CHECK(amount>0),UNIQUE(transaction_id,account_code,side));
         CREATE INDEX IF NOT EXISTS idx_ledger_transactions_occurred_at ON ledger_transactions(occurred_at DESC);
@@ -1495,8 +1601,9 @@ async Task InitializeDatabase()
 
 string CurrentMode()
 {
-    // Paylio has no sandbox: every payment is real.
-    if (paylioActive) return "live";
+    var onePayKey = Environment.GetEnvironmentVariable("ONEPAY_API_KEY");
+    if (!string.IsNullOrWhiteSpace(onePayKey))
+        return onePayKey.Contains("test", StringComparison.OrdinalIgnoreCase) ? "test" : "live";
     // Paymentwings issues separate sandbox and live key pairs; sandbox keys run in test mode automatically.
     var key = Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY");
     return string.IsNullOrWhiteSpace(key) || key.Contains("test", StringComparison.OrdinalIgnoreCase) || key.Contains("sandbox", StringComparison.OrdinalIgnoreCase) ? "test" : "live";
@@ -1581,10 +1688,10 @@ async Task<string> ConfirmDonationPayment(string txRef, CancellationToken cancel
 {
     await using var db = await OpenDatabase(cancellationToken);
     await using var getDonation = db.CreateCommand();
-    getDonation.CommandText = "SELECT id,fundraiser_id,amount,status,currency,COALESCE(original_amount_minor,amount),provider_transaction_id,provider FROM donations WHERE provider_session_id=$tx_ref";
+    getDonation.CommandText = "SELECT id,fundraiser_id,amount,status,currency,COALESCE(original_amount_minor,amount),provider_transaction_id,provider,provider_mode FROM donations WHERE provider_session_id=$tx_ref";
     getDonation.Parameters.AddWithValue("$tx_ref", txRef);
     long donationId, fundraiserId, amount, originalMinor;
-    string status, donationCurrency, provider;
+    string status, donationCurrency, provider, providerMode;
     string? providerTransactionId;
     await using (var donationReader = await getDonation.ExecuteReaderAsync(cancellationToken))
     {
@@ -1597,6 +1704,7 @@ async Task<string> ConfirmDonationPayment(string txRef, CancellationToken cancel
         originalMinor = donationReader.GetInt64(5);
         providerTransactionId = donationReader.IsDBNull(6) ? null : donationReader.GetString(6);
         provider = donationReader.GetString(7);
+        providerMode = donationReader.IsDBNull(8) ? "" : donationReader.GetString(8);
     }
     if (status is "succeeded" or "failed") return status;
     if (string.IsNullOrWhiteSpace(providerTransactionId)) return "pending";
@@ -1606,7 +1714,40 @@ async Task<string> ConfirmDonationPayment(string txRef, CancellationToken cancel
     string verifiedRef;
     long? chargedMinor, feeMinor, settledMinor;
     string? settlementCurrency;
-    if (provider == "paylio")
+    string? verifiedOrderRef = null;
+    bool? verifiedLivemode = null;
+    if (provider == "onepay")
+    {
+        var apiKey = Environment.GetEnvironmentVariable("ONEPAY_API_KEY");
+        if (string.IsNullOrWhiteSpace(apiKey)) return "unverified";
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"v1/payments/{Uri.EscapeDataString(providerTransactionId)}");
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
+            using var response = await onePayHttp.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode) return response.StatusCode == System.Net.HttpStatusCode.NotFound ? "pending" : "unverified";
+            using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+            var data = result.RootElement;
+            string? Text(string name) => data.TryGetProperty(name, out var value) && value.ValueKind != JsonValueKind.Null ? value.ToString() : null;
+            verifiedStatus = Text("status") ?? "";
+            verifiedRef = Text("id") ?? "";
+            verifiedOrderRef = Text("reference");
+            verifiedCurrency = Text("currency") ?? "";
+            verifiedAmount = decimal.TryParse(Text("amount"), NumberStyles.Number, CultureInfo.InvariantCulture, out var parsedAmount) ? parsedAmount : -1;
+            verifiedLivemode = data.TryGetProperty("livemode", out var liveValue) && liveValue.ValueKind is JsonValueKind.True or JsonValueKind.False
+                ? liveValue.GetBoolean() : null;
+            chargedMinor = null;
+            feeMinor = null;
+            settledMinor = null;
+            settlementCurrency = null;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
+        {
+            app.Logger.LogWarning(ex, "Could not verify 1pay.cx transaction {TxRef}.", txRef);
+            return "unverified";
+        }
+    }
+    else if (provider == "paylio")
     {
         var apiKey = Environment.GetEnvironmentVariable("PAYLIO_API_KEY");
         if (string.IsNullOrWhiteSpace(apiKey)) return "unverified";
@@ -1659,7 +1800,9 @@ async Task<string> ConfirmDonationPayment(string txRef, CancellationToken cancel
     catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException) { app.Logger.LogWarning(ex, "Could not verify Paymentwings transaction {TxRef}.", txRef); return "unverified"; }
     }
 
-    if (verifiedRef != providerTransactionId) return "unverified";
+    if (verifiedRef != providerTransactionId
+        || (provider == "onepay" && (verifiedOrderRef != txRef || verifiedLivemode != (providerMode == "live"))))
+        return "unverified";
     if (verifiedStatus.Equals("failed", StringComparison.OrdinalIgnoreCase) || verifiedStatus.Equals("cancelled", StringComparison.OrdinalIgnoreCase) || verifiedStatus.Equals("canceled", StringComparison.OrdinalIgnoreCase) || verifiedStatus.Equals("expired", StringComparison.OrdinalIgnoreCase))
     {
         await using var markFailed = db.CreateCommand();
@@ -1668,7 +1811,9 @@ async Task<string> ConfirmDonationPayment(string txRef, CancellationToken cancel
         await markFailed.ExecuteNonQueryAsync(cancellationToken);
         return "failed";
     }
-    if (!verifiedStatus.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase) && !verifiedStatus.Equals("successful", StringComparison.OrdinalIgnoreCase)) return "pending";
+    if (!verifiedStatus.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase)
+        && !verifiedStatus.Equals("successful", StringComparison.OrdinalIgnoreCase)
+        && !verifiedStatus.Equals("paid", StringComparison.OrdinalIgnoreCase)) return "pending";
     if (!verifiedCurrency.Equals(donationCurrency, StringComparison.OrdinalIgnoreCase) || DonationMoney.ToMinor(verifiedAmount) != originalMinor)
     {
         app.Logger.LogWarning("{Provider} transaction {TxRef} did not match the expected amount or currency; not recorded.", provider, txRef);
@@ -1810,4 +1955,10 @@ object ReadFundraiser(SqliteDataReader reader)
 
 record FundraiserInput(string Title, string Summary, string Story, string Image, long Goal, long ReportedRaised, long ReportedDonationCount, bool Published, bool Featured, string Category, string OrganizerName, string OrganizerLocation, string OrganizerProfileImage, string OrganizerBio);
 record CampaignUpdateInput(string Title, string Body);
+/// <summary>Comment text and a private contact email supplied by a visitor.</summary>
+sealed record CreateCommentRequest(string? Email, string? Body);
+/// <summary>A public comment without the author's email address.</summary>
+sealed record CommentResponse(long Id, string Body, DateTimeOffset CreatedAt);
+/// <summary>A comment and its private contact email for administrators.</summary>
+sealed record AdminCommentResponse(long Id, string Campaign, string Slug, string Email, string Body, DateTimeOffset CreatedAt, bool Published);
 record SeedCampaign(string Title, string Summary, string Story, string Image, long Goal, string Category);

@@ -5,13 +5,6 @@ const DONATION_PRESETS = { USD: [25, 50, 100, 250], NGN: [10000, 25000, 50000, 1
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 let csrfToken = "";
 let campaigns = [];
-const PAYMENT_ICONS = {
-  paypal: `<span class="payment-icon payment-icon-paypal" aria-hidden="true">P</span>`,
-  cashapp: `<span class="payment-icon payment-icon-cashapp" aria-hidden="true">$</span>`,
-  venmo: `<span class="payment-icon payment-icon-venmo" aria-hidden="true">V</span>`,
-  bank: `<span class="payment-icon payment-icon-bank" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3 9 9-5 9 5M5 10v7m4-7v7m6-7v7m4-7v7M3 19h18"/></svg></span>`,
-  card: `<span class="payment-icon payment-icon-card" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/></svg></span>`
-};
 
 async function request(url, options = {}) {
   const headers = new Headers(options.headers || {});
@@ -79,9 +72,14 @@ function organizerProfileLink(campaign) {
   return `<div class="organizer-line"><a class="organizer-badge" href="/people/${encodeURIComponent(slug)}"><img src="${esc(photo)}" alt="${esc(name)} profile photo" loading="lazy"><span><strong>${esc(name)}</strong><small>${esc(campaign.organizerLocation || "Organizer")}</small></span></a></div>`;
 }
 
-function card(campaign, index) {
+function cardMarkup(campaign, index) {
   const href = `/fundraisers/${encodeURIComponent(campaign.slug)}`;
   return `<article class="campaign-card" data-card-slug="${esc(campaign.slug)}" tabindex="0" role="button" aria-label="Donate to ${esc(campaign.title)}" style="animation-delay:${index * 70}ms"><a class="card-image-link" href="${href}" tabindex="-1" aria-hidden="true"><img src="${esc(campaign.image)}" alt="" loading="lazy"></a><div class="card-body"><div class="card-kicker">${esc(campaign.category || "Community")}</div><h3><a href="${href}">${esc(campaign.title)}</a></h3>${organizerProfileLink(campaign)}<p class="card-summary">${esc(campaign.summary)}</p><div class="raised-line"><span><strong>${money(campaign.raised)}</strong> raised</span><span>of ${money(campaign.goal)}</span></div><div class="progress-track" role="progressbar" aria-label="${progress(campaign)} percent funded" aria-valuenow="${progress(campaign)}" aria-valuemin="0" aria-valuemax="100"><div class="progress-fill" style="width:${progress(campaign)}%"></div></div><div class="card-foot"><span class="donor-count">${Number(campaign.donations).toLocaleString()} Kindwell gifts${campaign.reportedDonations ? ` · ${Number(campaign.reportedDonations).toLocaleString()} reported before Kindwell` : ""}</span><a class="button" href="${href}">Donate</a></div></div></article>`;
+}
+
+function card(campaign, index) {
+  const href = `/fundraisers/${encodeURIComponent(campaign.slug)}#comment-form`;
+  return cardMarkup(campaign, index).replace("</article>", `<a class="card-comment" href="${href}" aria-label="Comment on ${esc(campaign.title)}"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H5l1.5-3A8.5 8.5 0 1 1 21 11.5Z"/></svg><span>Comment</span></a></article>`);
 }
 
 function setupCardNavigation(root, availableCampaigns) {
@@ -114,6 +112,9 @@ async function renderHome() {
   document.title = "Kindwell — Good things grow together";
   appRoot.innerHTML = `${header()}<main id="home"><section class="hero"><div class="hero-inner"><div class="hero-copy"><span class="eyebrow">Good things grow together</span><h1>Together, We Can Make a Difference.</h1><p>When a neighbor needs a hand, a community can change everything. Find a cause close to your heart and help move it forward.</p><form class="search-form" id="search-form" role="search"><svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 5 5"/></svg><label class="sr-only" for="campaign-search">Search fundraisers</label><input id="campaign-search" name="q" placeholder="Try “community garden”" autocomplete="off"><button class="button" type="submit">Search</button></form><div class="hero-chips" aria-label="Browse by category"><span>Popular:</span>${["Medical", "Emergency", "Education", "Environment", "Community"].map(c => `<a href="/fundraisers?category=${encodeURIComponent(c)}">${c}</a>`).join("")}</div><div class="hero-actions"><a class="button" href="/fundraisers">Browse fundraisers</a><a class="button button-ghost" href="/#how-it-works">How it works</a></div><div class="hero-note">Every contribution is handled securely by Paymentwings.</div></div><div class="hero-photo"><img src="https://images.unsplash.com/photo-1531206715517-5c0ba140b2b8?auto=format&fit=crop&w=1200&q=85" alt="Neighbors gather around a shared community project" fetchpriority="high"><div class="photo-caption"><span class="caption-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 21s-8-4.5-8-11a4.5 4.5 0 0 1 8-2.8A4.5 4.5 0 0 1 20 10c0 6.5-8 11-8 11Z"/><path d="M12 7v8m-3-3h6"/></svg></span><span class="caption-text">A little help goes a long way<small>Real people. Local impact. Shared hope.</small></span></div></div></div></section><section class="proof-strip" aria-label="Kindwell impact"><div class="proof-inner"><div class="proof-item"><strong>${campaigns.length}</strong><span>active fundraisers</span></div></div></section><section class="section" id="fundraisers"><div class="page-wrap"><div class="section-heading"><div><span class="eyebrow">Causes to care about</span><h2>Stories moving forward</h2></div><p>Meet the people and projects making good things happen, one thoughtful gift at a time.</p><a class="button view-more-btn" href="/fundraisers">View more <span aria-hidden="true">→</span></a></div><div class="campaign-grid" id="campaign-grid">${campaigns.slice(0, 6).map(card).join("") || `<div class="empty-state">Fundraisers are having trouble loading. Please refresh to try again.</div>`}</div><div class="start-cta"><h3>Have a cause of your own?</h3><p>Tell us your story and we'll help you get started.</p><a class="button" href="/start/1">Start Kindwell fundraiser</a></div></div></section><section class="section categories-section"><div class="page-wrap"><div class="section-heading"><div><span class="eyebrow">Browse by category</span><h2>Find a cause that moves you</h2></div><a class="button view-more-btn" href="/categories">View more <span aria-hidden="true">→</span></a></div><div class="category-grid">${[["Medical","Help with care, recovery and treatment","M12 21s-8-4.5-8-11a4.5 4.5 0 0 1 8-2.8A4.5 4.5 0 0 1 20 10c0 6.5-8 11-8 11Z"],["Emergency","Support neighbors in urgent need","M12 3 2 21h20L12 3Zm0 6v5m0 3v.5"],["Education","Open doors to learning","M3 9l9-5 9 5-9 5-9-5Zm4 3v5c0 0 2.5 2 5 2s5-1 5-2v-5"],["Environment","Protect and restore our shared places","M5 19c0-8 5-13 14-14 0 9-5 14-13 14m0 0c1-4 4-7 8-9"],["Community","Strengthen the places we live","M3 11l9-7 9 7v9H3v-9Zm6 9v-6h6v6"]].map(([n,d,p]) => `<a class="category-tile" href="/fundraisers?category=${n}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="${p}"/></svg><h3>${n}</h3><p>${d}</p></a>`).join("")}</div></div></section><section class="how-section" id="how-it-works"><div class="page-wrap"><div class="how-heading"><span class="eyebrow">Simple by design</span><h2>Giving should feel good.</h2><p>A few easy steps can help a good thing go a little further.</p></div><div class="steps"><article class="step"><span class="step-number">01</span><h3>Find your reason</h3><p>Explore community-led fundraisers and choose a story that matters to you.</p></article><article class="step"><span class="step-number">02</span><h3>Give with confidence</h3><p>Choose an amount and complete your gift through Paymentwings's secure checkout.</p></article><article class="step"><span class="step-number">03</span><h3>Be part of the good</h3><p>Confirmed gifts are recorded transparently and shared with the campaign community.</p></article></div></div></section><section class="section trust-section"><div class="page-wrap"><div class="section-heading"><div><span class="eyebrow">Giving with confidence</span><h2>Built on transparency</h2></div><p>Plain answers about how your gift is handled.</p></div><div class="trust-grid"><article><h3>Secure payments</h3><p>Card details are entered on Paymentwings's hosted checkout and never touch our servers.</p></article><article><h3>Honest totals</h3><p>Only confirmed payments count. Amounts reported from before Kindwell are labeled separately.</p></article><article><h3>Campaign updates</h3><p>Organizers post updates so you can see how a story moves forward.</p></article></div><div class="faq"><details><summary>Is my donation secure?</summary><p>Yes. Payments are processed by Paymentwings over an encrypted connection.</p></details><details><summary>When does a gift appear on a campaign?</summary><p>After Paymentwings confirms the payment, usually within moments.</p></details><details><summary>Who can I contact for help?</summary><p>Email <a href="mailto:hello@kindwell.care">hello@kindwell.care</a>.</p></details></div></div></section><section class="section why-section"><div class="page-wrap"><div class="section-heading"><div><span class="eyebrow">Why Kindwell</span><h2>Giving made simple and safe</h2></div></div><div class="why-grid"><article><h3>Start a fundraiser</h3><p>Have a cause that needs support? <a href="mailto:hello@kindwell.care?subject=Start%20a%20fundraiser">Tell us your story</a> and our team will help you get started.</p></article><article><h3>Share with your people</h3><p>Every fundraiser has its own page you can share by link, message or social media.</p></article><article><h3>Transparent records</h3><p>Every confirmed gift is recorded in a permanent ledger and reported openly.</p></article><article><h3>Friendly support</h3><p>Questions about a gift or a campaign? Our team is a message away at hello@kindwell.care.</p></article></div></div></section><section class="closing-band" id="about"><div class="closing-inner"><div><h2>Care is something we do together.</h2><p>Kindwell brings thoughtful people closer to causes that matter.</p></div><a class="button" href="/#fundraisers">Explore fundraisers <span aria-hidden="true">→</span></a></div></section></main>${footer()}`;
   const proofItems = document.querySelectorAll(".proof-item");
+  document.querySelectorAll(".hero-note, .steps .step:nth-child(2) p, .trust-grid article:first-child p, .faq details p").forEach(element => {
+    element.textContent = element.textContent.replaceAll("Paymentwings", "1pay.cx");
+  });
   document.querySelector(".hero-chips > span").textContent = "Browse:";
   proofItems[0].firstElementChild.textContent = "One act of Kindness Change Lives";
   proofItems[0].lastElementChild.textContent = "1B+ raised over the years";
@@ -161,6 +162,7 @@ async function renderDetail(slug) {
   appRoot.innerHTML = `${header()}<main class="page-wrap page-shell"><p class="breadcrumbs"><a href="/">Home</a> / <a href="/#fundraisers">Fundraisers</a> / ${esc(campaign.title)}</p><div class="detail-layout"><article class="detail-main"><h1>${esc(campaign.title)}</h1>${organizerMarkup || ""}<img class="detail-cover" src="${esc(campaign.image)}" alt="Image for ${esc(campaign.title)}"><h2>Why this matters</h2><p class="detail-story">${esc(campaign.story)}</p><div class="share-row"><button id="share-button" type="button">Share fundraiser</button><button id="copy-button" type="button">Copy link</button></div></article><aside class="detail-sidebar"><div class="raised-line"><span><strong>${money(campaign.raised)}</strong> raised</span><span>of ${money(campaign.goal)}</span></div><div class="progress-track" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${pct} percent funded"><div class="progress-fill" style="width:${pct}%"></div></div><div class="detail-stat">${campaign.donations} gifts confirmed through Kindwell${campaign.reportedDonations ? ` · ${campaign.reportedDonations} reported before Kindwell` : ""} · ${pct}% of goal</div><button class="button" id="open-donate">Donate</button><h3>Recent gifts</h3>${data.recentDonations.length ? data.recentDonations.map(donation => `<div class="donation-row"><span>${esc(donation.name)}</span><strong>${money(donation.amount)}</strong></div>`).join("") : `<p class="donor-count">No gifts have been confirmed through Kindwell yet.</p>`}<p class="trust-note">Your gift is processed over an encrypted connection, and Kindwell never stores your card details. A small processing fee is taken from each gift and shown before you pay. Questions about a donation? Contact us at <a href="mailto:hello@kindwell.care">hello@kindwell.care</a>.</p></aside></div></main>${footer()}<div id="modal-root"></div>`;
   setupMenu();
   document.querySelector(".detail-main").insertAdjacentHTML("beforeend", updatesMarkup);
+  setupComments(campaign.slug);
   document.querySelector("#open-donate").addEventListener("click", () => openDonation(campaign));
   document.querySelector("#share-button").addEventListener("click", async () => {
     if (navigator.share) await navigator.share({ title: campaign.title, url: location.href });
@@ -169,10 +171,42 @@ async function renderDetail(slug) {
   document.querySelector("#copy-button").addEventListener("click", async event => { await navigator.clipboard.writeText(location.href); event.currentTarget.textContent = "Link copied"; });
 }
 
+function setupComments(slug) {
+  const endpoint = `/api/fundraisers/${encodeURIComponent(slug)}/comments`;
+  document.querySelector(".detail-main").insertAdjacentHTML("beforeend", `<section class="comments-section"><h2>Comments</h2><form id="comment-form" class="admin-form"><label for="comment-email">Email</label><input id="comment-email" type="email" maxlength="254" autocomplete="email" required><label for="comment-body">Your comment</label><textarea id="comment-body" maxlength="2000" required></textarea><p class="donor-count">Your comment is public and shown as Kindwell visitor. Your email is private and visible to the administrator. Please don't include private information in your comment.</p><button class="button" type="submit">Send comment</button><p class="notice" id="comment-notice" role="status" aria-live="polite"></p></form><div id="comments-list" aria-live="polite"></div><div class="report-presets" id="comments-pagination"></div></section>`);
+  const notice = document.querySelector("#comment-notice");
+  const loadComments = async (page = 1) => {
+    try {
+      const result = await request(`${endpoint}?page=${page}`);
+      document.querySelector("#comments-list").innerHTML = result.items.map(item => `<article class="comment"><strong>Kindwell visitor</strong> <time datetime="${esc(item.createdAt)}">${esc(new Date(item.createdAt).toLocaleString())}</time><p>${esc(item.body)}</p></article>`).join("") || `<p class="donor-count">No comments yet. Be the first to share a message.</p>`;
+      const pagination = document.querySelector("#comments-pagination");
+      pagination.innerHTML = `<button type="button" data-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>Previous</button><span>Page ${page}</span><button type="button" data-page="${page + 1}" ${result.hasMore ? "" : "disabled"}>Next</button>`;
+      pagination.querySelectorAll("button").forEach(button => button.addEventListener("click", () => void loadComments(Number(button.dataset.page))));
+    } catch (issue) { notice.textContent = `Unable to load comments: ${issue.message}`; }
+  };
+  document.querySelector("#comment-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("button");
+    button.disabled = true;
+    notice.textContent = "Sending comment...";
+    try {
+      await request(endpoint, { method: "POST", body: JSON.stringify({ email: document.querySelector("#comment-email").value, body: document.querySelector("#comment-body").value }) });
+      form.reset();
+      notice.textContent = "Your comment has been posted.";
+      await loadComments(1);
+    } catch (issue) { notice.textContent = issue.message; }
+    finally { button.disabled = false; }
+  });
+  void loadComments();
+  if (location.hash === "#comment-form") document.querySelector("#comment-email").focus();
+}
+
 function openDonation(campaign) {
   const root = document.querySelector("#modal-root");
   document.body.style.overflow = "hidden";
-  root.innerHTML = `<div class="modal-backdrop" role="presentation"><section class="auth-wrap" role="dialog" aria-modal="true" aria-labelledby="donate-title"><div class="auth-panel"><button type="button" class="modal-close" aria-label="Close donation window">×</button><h1 id="donate-title">Donate</h1><p>Your gift will support “${esc(campaign.title)}”.</p><form id="donation-form"><label for="donor-currency">Currency</label><select id="donor-currency"><option value="USD">USD</option></select><div class="payment-options" id="amount-options"></div><label class="sr-only" for="custom-amount">Custom gift amount</label><div class="donate-custom"><span id="currency-symbol">$</span><input id="custom-amount" type="number" min="1" max="100000000" step="0.01" placeholder="Enter another amount" inputmode="decimal"></div><p class="secure-copy" id="usd-estimate" aria-live="polite"></p><label for="donor-name">Name (optional)</label><input id="donor-name" maxlength="80" placeholder="Your name"><label for="donor-email">Email (for your payment receipt)</label><input id="donor-email" type="email" maxlength="254" required autocomplete="email" placeholder="you@example.com"><div class="form-checks"><label><input id="anonymous" type="checkbox"> Give anonymously</label></div><button class="button" type="submit">Donate securely</button><p class="secure-copy">Kindwell is your payment assistant. In the next step, you will enter card details securely on our payment partner's own page. Kindwell stores your donation details and receipt email, but never stores card number, CVV, PIN, or OTP.</p><p class="notice" id="donate-error" role="alert"></p></form></div></section></div>`;
+  root.innerHTML = `<div class="modal-backdrop" role="presentation"><section class="auth-wrap" role="dialog" aria-modal="true" aria-labelledby="donate-title"><div class="auth-panel"><button type="button" class="modal-close" aria-label="Close donation window">×</button><h1 id="donate-title">Donate</h1><p>Your gift will support “${esc(campaign.title)}”.</p><form id="donation-form"><label for="donor-currency">Currency</label><select id="donor-currency"><option value="USD">USD</option></select><div class="payment-options" id="amount-options"></div><label class="sr-only" for="custom-amount">Custom gift amount</label><div class="donate-custom"><span id="currency-symbol">$</span><input id="custom-amount" type="number" min="1" max="100000000" step="0.01" placeholder="Enter another amount" inputmode="decimal"></div><p class="secure-copy" id="usd-estimate" aria-live="polite"></p><label for="donor-name">Name (optional)</label><input id="donor-name" maxlength="80" placeholder="Your name"><label for="donor-email">Email (for your payment receipt)</label><input id="donor-email" type="email" maxlength="254" required autocomplete="email" placeholder="you@example.com">  <div class="form-checks"><label><input id="anonymous" type="checkbox"> Give anonymously</label></div><div class="card-payment-choice"><span aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/></svg></span><span><strong>Card</strong><small>You'll continue to Paymentwings' secure hosted checkout. Kindwell never asks for or receives your card number, expiry, CVV, PIN, or one-time code.</small></span></div><button class="button" type="submit">Continue to secure card checkout</button><p class="notice" id="donate-error" role="alert"></p></form></div></section></div>`;
+  root.querySelector(".card-payment-choice small").textContent = "Continue to 1pay.cx hosted checkout on our branded payment domain. Kindwell never asks for or receives your card number, expiry, CVV, PIN, or one-time code.";
   const closeDialog = () => {
     root.innerHTML = "";
     document.body.style.overflow = "";
@@ -210,13 +244,14 @@ function openDonation(campaign) {
   root.querySelector(".modal-close").addEventListener("click", closeDialog);
   root.querySelector(".modal-backdrop").addEventListener("click", event => { if (event.target.classList.contains("modal-backdrop")) closeDialog(); });
   const cardCheckout = async (amount, button, error) => {
-    button.disabled = true; button.textContent = "Opening secure payment…"; error.textContent = "";
+    button.disabled = true; button.textContent = "Opening secure card checkout…"; error.textContent = "";
     try {
       const result = await request("/api/donations/checkout", { method: "POST", body: JSON.stringify({ slug: campaign.slug, amount, currency: currencySelect.value, name: root.querySelector("#donor-name").value, email: root.querySelector("#donor-email").value, anonymous: root.querySelector("#anonymous").checked }) });
       // Returning with the back button restores this page from cache; reset the button so the donor can retry.
-      window.addEventListener("pageshow", () => { button.disabled = false; button.textContent = "Donate securely"; }, { once: true });
-      startHostedPaymentAssistant(result, campaign, closeDialog);
-    } catch (issue) { error.textContent = issue.message; button.disabled = false; button.textContent = "Donate securely"; }
+      window.addEventListener("pageshow", () => { button.disabled = false; button.textContent = "Continue to secure card checkout"; }, { once: true });
+      if (!result.url) throw new Error("The payment partner did not return a checkout link. Please try again later.");
+      location.assign(result.url);
+    } catch (issue) { error.textContent = issue.message; button.disabled = false; button.textContent = "Continue to secure card checkout"; }
   };
   root.querySelector("#donation-form").addEventListener("submit", event => {
     event.preventDefault();
@@ -225,60 +260,8 @@ function openDonation(campaign) {
     const error = root.querySelector("#donate-error");
     if (!(amount > 0)) { error.textContent = "Please choose or enter a gift amount."; return; }
     error.textContent = "";
-    const methods = [["paypal", "PayPal"], ["cashapp", "Cash App"], ["venmo", "Venmo"], ["bank", "Bank transfer"], ["card", "Card"]];
-    root.querySelector("#method-picker")?.remove();
-    form.hidden = true;
-    form.insertAdjacentHTML("afterend", `<div id="method-picker"><h2>How would you like to donate?</h2><p>${esc(formatCurrency(amount, currencySelect.value))} to “${esc(campaign.title)}”</p><div class="method-list">${methods.map(([key, label]) => `<button class="button button-light method-choice" type="button" data-method="${key}">${PAYMENT_ICONS[key]}<span>${label}</span></button>`).join("")}</div><button class="button button-light" type="button" id="method-back">Back</button></div>`);
-    const picker = root.querySelector("#method-picker");
-    picker.querySelector("#method-back").addEventListener("click", () => { picker.remove(); form.hidden = false; });
-    picker.querySelectorAll("[data-method]").forEach(choice => choice.addEventListener("click", () => {
-      const method = choice.dataset.method;
-      if (method === "card") { picker.remove(); form.hidden = false; cardCheckout(amount, form.querySelector(".button"), error); return; }
-      const params = new URLSearchParams({ amount: String(amount), currency: currencySelect.value, slug: campaign.slug, title: campaign.title });
-      document.body.style.overflow = "";
-      location.href = `/pay/${method}?${params}`;
-    }));
+    cardCheckout(amount, form.querySelector(".button"), error);
   });
-}
-
-function startHostedPaymentAssistant(order, campaign, closeDialog) {
-  const root = document.querySelector("#modal-root");
-  const amountText = formatCurrency(Math.round(order.amount * 100), order.currency);
-  const title = order.campaign || campaign.title;
-  const panel = body => { root.innerHTML = `<div class="modal-backdrop" role="presentation"><section class="auth-wrap" role="dialog" aria-modal="true" aria-label="Kindwell payment"><div class="auth-panel"><div>${brand()}</div>${body}</div></section></div>`; };
-  const again = () => { stop(); closeDialog(); openDonation(campaign); };
-  let timer = null, popup = null, polling = false;
-  const stop = () => { clearInterval(timer); timer = null; };
-  const done = (mark, heading, text, withMore) => {
-    stop();
-    panel(`<span class="success-mark">${mark}</span><h1>${esc(heading)}</h1><p>${esc(text)}</p><div class="result-actions">${withMore ? `<button class="button" id="more" type="button">Donate more</button>` : `<button class="button" id="more" type="button">Try again</button>`}<button class="button button-light" id="close" type="button">Close</button></div>`);
-    root.querySelector("#more").addEventListener("click", again);
-    root.querySelector("#close").addEventListener("click", () => { stop(); closeDialog(); });
-  };
-  const waiting = (note = "") => {
-    const providerName = esc(order.provider || "payment partner");
-    const brands = (order.brands && order.brands.length ? order.brands : ["Visa", "Mastercard"]).map(brand => `<span>${esc(brand)}</span>`).join("");
-    panel(`<h1>Complete your payment</h1><p><strong>${esc(amountText)}</strong> to “${esc(title)}”</p><p class="secure-copy">Enter your card details in the secure ${providerName} window. This page updates by itself the moment ${providerName} confirms your payment. Kindwell never sees your card number, CVV, PIN or one-time code.</p><div class="card-helper"><div class="card-helper-head" id="wait-status">Waiting for payment confirmation…</div><div class="card-badges">${brands}</div><span class="lock-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>PCI-compliant checkout hosted by ${providerName}</span></div><button class="button" id="reopen" type="button">Open secure payment window</button><button class="button button-light" id="cancel" type="button">Cancel</button><p class="notice" id="assistant-error" role="alert">${esc(note)}</p>`);
-    root.querySelector("#cancel").addEventListener("click", () => { stop(); closeDialog(); });
-    root.querySelector("#reopen").addEventListener("click", open);
-  };
-  const check = async () => {
-    if (polling) return;
-    polling = true;
-    try {
-      const status = await request(`/api/donations/status/${encodeURIComponent(order.txRef)}`);
-      if (status.confirmed) { try { popup?.close(); } catch { } done("✓", "Thank you for your donation!", `Your ${formatCurrency(status.originalAmount, status.currency)} gift to ${status.campaign} is confirmed.`, true); }
-      else if (status.failed) { try { popup?.close(); } catch { } done("×", "Payment failed", `${order.provider || "Our payment partner"} could not complete this payment. No gift was recorded.`, false); }
-    } catch { /* keep waiting; the next poll retries */ }
-    polling = false;
-  };
-  const open = () => {
-    popup = window.open(order.url, "kindwell-paymentwings", "width=480,height=760");
-    if (!popup) { const note = root.querySelector("#assistant-error"); if (note) note.innerHTML = `Your browser blocked the window. <a href="${esc(order.url)}" target="_blank" rel="noopener">Open secure payment page</a>`; }
-    if (!timer) timer = setInterval(check, 3000);
-  };
-  waiting();
-  open();
 }
 
 async function renderPeople() {
@@ -461,37 +444,6 @@ async function renderOngoing() {
   setupMenu();
 }
 
-// Fill these in with the real receiving details before going live.
-const BTC_PAYMENT = {
-  address: "bc1qyqu0f5ce28s6pa4357r0xc4jz40wt09zsfuety",
-  bank: { name: "YOUR_BANK_NAME", account: "YOUR_ACCOUNT_NAME", number: "YOUR_ACCOUNT_NUMBER" }
-};
-const PAY_METHODS = {
-  paypal: { label: "PayPal", steps: ["Open the PayPal app or log in at paypal.com.", "Tap <strong>Crypto</strong> and choose <strong>Bitcoin (BTC)</strong>. Buy BTC if you don't have any yet.", "Tap <strong>Send</strong> / <strong>Transfer</strong> and select <strong>Send to external wallet</strong>.", "Paste the Kindwell BTC wallet address shown below.", "Enter the equivalent of your gift amount and confirm the transfer."] },
-  cashapp: { label: "Cash App", steps: ["Open Cash App and tap the <strong>Bitcoin</strong> tab (₿).", "Buy BTC if your balance is not enough.", "Tap <strong>Send</strong> / <strong>Withdraw</strong> and choose <strong>Send Bitcoin</strong>.", "Paste the Kindwell BTC wallet address shown below.", "Enter the equivalent of your gift amount, review, and confirm."] },
-  venmo: { label: "Venmo", steps: ["Open the Venmo app and tap the <strong>Crypto</strong> tab.", "Choose <strong>Bitcoin</strong> and buy BTC if you don't have any yet.", "Tap <strong>Transfer</strong> and select <strong>Send to external wallet</strong>.", "Paste the Kindwell BTC wallet address shown below.", "Enter the equivalent of your gift amount and confirm."] },
-  bank: { label: "Bank transfer", steps: ["Log in to your banking app or crypto exchange.", "Buy BTC with your bank transfer if you don't have any yet.", "Choose <strong>Withdraw / Send BTC</strong> to an external wallet.", "Paste the Kindwell BTC wallet address shown below.", "Enter the equivalent of your gift amount and confirm."] }
-};
-
-function renderPay(method) {
-  const info = PAY_METHODS[method];
-  if (!info) return renderHome();
-  const params = new URLSearchParams(location.search);
-  const slug = params.get("slug") || "";
-  const title = params.get("title") || "this fundraiser";
-  const amount = Number(params.get("amount"));
-  const currency = /^[A-Z]{3}$/.test(params.get("currency") || "") ? params.get("currency") : "USD";
-  const amountText = amount > 0 ? formatCurrency(amount, currency) : "your gift";
-  document.title = `Pay with ${info.label} | Kindwell`;
-  const showAddress = esc(BTC_PAYMENT.address);
-  appRoot.innerHTML = `${header()}<main class="auth-wrap"><section class="auth-panel" id="pay-panel"><div>${brand()}</div><h1>Pay with ${esc(info.label)}</h1><p>Send <strong>${esc(amountText)}</strong> in Bitcoin (BTC) to support “${esc(title)}”.</p><ol class="pay-steps">${info.steps.map(step => `<li>${step}</li>`).join("")}</ol><label>Kindwell BTC wallet address</label><input id="btc-address" readonly value="${showAddress}"><button class="button button-light" id="copy-address" type="button">Copy address</button><p class="secure-copy">Only send Bitcoin (BTC) to this address. Transfers can't be reversed, so double-check the address before confirming.</p><button class="button" id="made-payment" type="button">I have made payment</button><a class="button button-light" href="${slug ? `/fundraisers/${encodeURIComponent(slug)}` : "/"}">Back</a></section></main>${footer()}`;
-  setupMenu();
-  document.querySelector("#copy-address").addEventListener("click", async event => { await navigator.clipboard.writeText(BTC_PAYMENT.address); event.currentTarget.textContent = "Address copied"; });
-  document.querySelector("#made-payment").addEventListener("click", () => {
-    document.querySelector("#pay-panel").innerHTML = `<div>${brand()}</div><span class="success-mark">✓</span><h1>Thank you!</h1><p>We appreciate your generosity toward “${esc(title)}”. Your gift will be confirmed once the Bitcoin transfer is received.</p><a class="button" href="${slug ? `/fundraisers/${encodeURIComponent(slug)}` : "/fundraisers"}">Donate more</a>`;
-  });
-}
-
 async function renderThankYou() {
   document.title = "Gift status | Kindwell";
   const params = new URLSearchParams(location.search);
@@ -525,6 +477,7 @@ async function renderAdmin() {
     const error = document.querySelector("#admin-error");
     try {
       await request("/api/admin/login", { method: "POST", body: JSON.stringify({ email: document.querySelector("#admin-email").value, password: document.querySelector("#admin-password").value }) });
+      await loadCsrf();
       await renderDashboard();
     } catch (issue) { error.textContent = issue.message; }
   });
@@ -610,6 +563,27 @@ async function renderDashboard() {
     } catch (issue) { notice.textContent = issue.message; }
   };
   let financeLoaded = false;
+  document.querySelector(".admin-tabs").insertAdjacentHTML("beforeend", `<button data-tab="comments">Comments</button>`);
+  document.querySelector("#finance-tab").insertAdjacentHTML("afterend", `<section id="comments-tab" hidden><div class="admin-panel"><h2>Comment moderation</h2><p>Emails are private and only visible to administrators.</p><p class="notice" id="admin-comments-notice" role="status" aria-live="polite"></p><div id="admin-comments-list"></div><div class="report-presets" id="admin-comments-pagination"></div></div></section>`);
+  let commentsLoaded = false;
+  const loadAdminComments = async (page = 1) => {
+    const notice = document.querySelector("#admin-comments-notice");
+    notice.textContent = "Loading comments...";
+    try {
+      const result = await request(`/api/admin/comments?page=${page}`);
+      document.querySelector("#admin-comments-list").innerHTML = result.items.map(item => `<article class="comment"><strong>${esc(item.campaign)}</strong>${item.published ? "" : " (draft)"}<br><small>${esc(item.email)} · ${esc(new Date(item.createdAt).toLocaleString())}</small><p>${esc(item.body)}</p><button type="button" data-delete-comment="${item.id}">Delete comment</button></article>`).join("") || `<p class="donor-count">No comments on this page.</p>`;
+      document.querySelectorAll("[data-delete-comment]").forEach(button => button.addEventListener("click", async () => {
+        if (!confirm("Delete this comment?")) return;
+        button.disabled = true;
+        try { await request(`/api/admin/comments/${button.dataset.deleteComment}`, { method: "DELETE" }); await loadAdminComments(page); }
+        catch (issue) { notice.textContent = issue.message; button.disabled = false; }
+      }));
+      const pagination = document.querySelector("#admin-comments-pagination");
+      pagination.innerHTML = `<button type="button" data-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>Previous</button><span>Page ${page}</span><button type="button" data-page="${page + 1}" ${result.hasMore ? "" : "disabled"}>Next</button>`;
+      pagination.querySelectorAll("button").forEach(button => button.addEventListener("click", () => void loadAdminComments(Number(button.dataset.page))));
+      notice.textContent = "";
+    } catch (issue) { commentsLoaded = false; notice.textContent = `Unable to load comments: ${issue.message}`; }
+  };
   document.querySelector("#finance-filters").addEventListener("submit", event => { event.preventDefault(); void loadFinance(1); });
   document.querySelectorAll(".admin-tabs button").forEach(button => button.addEventListener("click", () => {
     document.querySelector("#finance-tab").hidden = button.dataset.tab !== "finance";
@@ -620,6 +594,8 @@ async function renderDashboard() {
     document.querySelector("#campaigns-tab").hidden = button.dataset.tab !== "campaigns";
     document.querySelector("#donations-tab").hidden = button.dataset.tab !== "donations";
     document.querySelector("#reports-tab").hidden = button.dataset.tab !== "reports";
+    document.querySelector("#comments-tab").hidden = button.dataset.tab !== "comments";
+    if (button.dataset.tab === "comments" && !commentsLoaded) { commentsLoaded = true; void loadAdminComments(); }
   }));
   let reportData = null;
   let ledgerPage = 1;
@@ -798,6 +774,7 @@ async function renderInfoPage(kind) {
   const isPrivacy = kind === "privacy";
   const title = isPrivacy ? "Privacy, with care" : "Terms of service";
   appRoot.innerHTML = `${header()}<main class="page-wrap page-shell"><div class="detail-main"><span class="eyebrow">Kindwell policies</span><h1>${title}</h1><p class="detail-story">${isPrivacy ? "Kindwell collects only the information needed to operate this service. Donation payments are handled by our payment partner; Kindwell never receives or stores your full card number or security code. We retain a donor name (or anonymous preference), gift amount, campaign, and payment status for transparent recordkeeping. We do not sell personal information. Contact hello@kindwell.care with privacy questions or requests." : "Kindwell provides community fundraising pages operated by a single administrator. Gifts are processed by our payment partner and are subject to its terms and payment processing charges. A gift is recorded as confirmed only after the payment provider verifies it. Refund requests are reviewed individually by contacting hello@kindwell.care. Campaign stories and goals are maintained by the Kindwell administrator. Kindwell may update these terms as the service evolves."}</p></div></main>${footer()}`;
+  if (isPrivacy) document.querySelector(".detail-main").insertAdjacentHTML("beforeend", `<p class="detail-story">Fundraiser comments are public and appear as Kindwell visitor. We store the email address submitted with each comment for administration; it is not shown publicly. Administrators can remove comments. Please do not include private information in a comment.</p>`);
   document.title = `${title} | Kindwell`; setupMenu();
 }
 
@@ -866,7 +843,6 @@ async function start() {
   if (pathname === "/categories" || pathname === "/categories/") return renderCategories();
   if (pathname === "/admin" || pathname === "/admin/") return renderAdmin();
   if (pathname === "/thank-you") return renderThankYou();
-  if (pathname.startsWith("/pay/")) return renderPay(pathname.slice("/pay/".length).replace(/\/$/, ""));
   if (pathname === "/privacy") return renderInfoPage("privacy");
   if (pathname === "/terms") return renderInfoPage("terms");
   if (pathname.startsWith("/fundraisers/")) return renderDetail(pathname.slice("/fundraisers/".length));

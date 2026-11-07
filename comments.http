@@ -1,0 +1,34 @@
+@baseUrl = http://localhost:5080
+@slug = a-brighter-start-for-maya
+@csrf = replace-with-token-from-csrf-request
+@commentId = 1
+
+### Obtain a token and cookie; retain the cookie for subsequent requests
+GET {{baseUrl}}/api/csrf
+
+### Public comments
+GET {{baseUrl}}/api/fundraisers/{{slug}}/comments?page=1
+
+### A single public comment
+GET {{baseUrl}}/api/fundraisers/{{slug}}/comments/{{commentId}}
+
+### Submit a comment (requires the CSRF cookie and token)
+POST {{baseUrl}}/api/fundraisers/{{slug}}/comments
+Content-Type: application/json
+X-CSRF-TOKEN: {{csrf}}
+
+{ "email": "visitor@example.com", "body": "Wishing you all the best." }
+
+### Sign in as administrator and refresh the CSRF token afterward
+POST {{baseUrl}}/api/admin/login
+Content-Type: application/json
+X-CSRF-TOKEN: {{csrf}}
+
+{ "email": "replace-with-admin-email", "password": "replace-with-admin-password" }
+
+### Administrator comments (requires administrator cookie)
+GET {{baseUrl}}/api/admin/comments?page=1
+
+### Delete a comment (requires administrator cookie and current CSRF token)
+DELETE {{baseUrl}}/api/admin/comments/{{commentId}}
+X-CSRF-TOKEN: {{csrf}}

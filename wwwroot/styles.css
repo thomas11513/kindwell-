@@ -80,6 +80,14 @@ h1 { max-width: 570px; margin: 18px 0 17px; font: 400 clamp(44px, 5.2vw, 68px)/1
 .text-link { color: var(--forest); font-weight: 700; font-size: 12px; border-bottom: 1px solid #b8c9b9; padding-bottom: 3px; white-space: nowrap; }
 .campaign-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; }
 .campaign-card { min-width: 0; overflow: hidden; border: 1px solid #e7eae5; border-radius: 6px; background: white; cursor: pointer; transition: transform .2s ease, box-shadow .2s ease; animation: rise .5s ease both; }
+.card-comment { display: inline-flex; align-items: center; gap: 6px; margin: 0 19px 18px; color: var(--forest); font-size: 12px; font-weight: 700; }
+.card-comment svg { width: 19px; height: 19px; }
+.comments-section { margin-top: 40px; }
+.comments-section .admin-form { max-width: 600px; }
+.comment { padding: 18px 0; border-bottom: 1px solid #e7eae5; overflow-wrap: anywhere; }
+.comment time, .comment small { color: #69756d; font-size: 12px; }
+.comment p { white-space: pre-wrap; margin: 8px 0; }
+.comments-section .report-presets, #admin-comments-pagination { align-items: center; }
 .campaign-card:focus-visible { outline: 3px solid #9cbb8e; outline-offset: 3px; }
 .campaign-card:hover { transform: translateY(-4px); box-shadow: 0 12px 28px rgba(29,41,35,.08); }
 .card-image-link { display: block; height: 205px; overflow: hidden; background: #e6eee3; }
@@ -213,13 +221,12 @@ h1 { max-width: 570px; margin: 18px 0 17px; font: 400 clamp(44px, 5.2vw, 68px)/1
 .modal-backdrop .auth-panel::-webkit-scrollbar-thumb { background: #c6d4c4; border-radius: 99px; }
 .modal-close { position: absolute; top: 12px; right: 13px; width: 32px; height: 32px; border: 1px solid var(--line); border-radius: 50%; background: white; color: #5a675f; font-size: 20px; line-height: 1; transition: background .15s, transform .15s; }
 .modal-close:hover { background: #f4f8f3; transform: rotate(90deg); }
-.card-helper { margin: 12px 0 16px; padding: 16px; border: 1px solid #dde7da; border-radius: 10px; background: linear-gradient(180deg, #f7faf6, #f0f6ed); text-align: left; }
-.card-helper-head { display: flex; align-items: center; gap: 9px; margin-bottom: 11px; color: var(--forest-deep); font-size: 12.5px; font-weight: 700; }
-.card-helper-head::before { content: ""; width: 9px; height: 9px; flex: none; border-radius: 50%; background: var(--forest); box-shadow: 0 0 0 0 rgba(20, 91, 67, .55); animation: pulseDot 1.6s ease-in-out infinite; }
-.card-badges { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 9px; }
-.card-badges span { display: inline-flex; align-items: center; justify-content: center; min-height: 30px; padding: 0 12px; border: 1px solid #d4dfd4; border-radius: 999px; background: #fff; color: #375447; font-size: 11px; font-weight: 700; letter-spacing: .2px; }
-.lock-badge { display: inline-flex; align-items: center; gap: 6px; margin-top: 11px; color: #5c6a62; font-size: 10.5px; font-weight: 600; }
-.lock-badge svg { width: 13px; height: 13px; flex: none; color: #7a9f4a; }
+.card-payment-choice { display: flex; align-items: flex-start; gap: 12px; margin: 17px 0; padding: 13px; border: 1px solid #dce4dc; border-radius: 8px; background: #f7faf6; }
+.card-payment-choice > span:first-child { display: grid; place-items: center; width: 34px; height: 34px; flex: none; border-radius: 7px; color: var(--forest); background: white; }
+.card-payment-choice svg { width: 20px; height: 20px; }
+.card-payment-choice strong, .card-payment-choice small { display: block; }
+.card-payment-choice strong { margin-bottom: 4px; color: var(--forest-deep); font-size: 12px; }
+.card-payment-choice small { color: #5c6a62; font-size: 10.5px; line-height: 1.5; }
 .auth-panel form > label:not(.sr-only) { display: block; margin: 13px 0 5px; color: #48574d; font-size: 11px; font-weight: 700; text-align: left; }
 .auth-panel form > input { width: 100%; padding: 10px 11px; border: 1px solid #dce4dc; border-radius: 4px; outline: 0; font-size: 12px; }
 .auth-panel form > input:focus { border-color: #78a171; box-shadow: 0 0 0 3px #e8f1e5; }
@@ -340,11 +347,6 @@ h1 { max-width: 570px; margin: 18px 0 17px; font: 400 clamp(44px, 5.2vw, 68px)/1
   .hero-actions .button { flex: 1; text-align: center; }
 }
 .result-actions { display: flex; gap: 10px; margin-top: 6px; } .result-actions .button { flex: 1; }
-.method-list { display: grid; gap: 10px; margin: 14px 0; }
-.method-choice { justify-content: flex-start; gap: 13px; text-align: left; min-height: 56px; border-radius: 10px; transition: border-color .15s, background .15s, transform .15s, box-shadow .15s; }
-.method-choice:hover { border-color: #9cbb8e; background: #f7faf6; transform: translateY(-1px); box-shadow: 0 8px 18px rgba(20,91,67,.08); }
-.method-tag { margin-left: auto; padding: 3px 9px; border-radius: 999px; background: var(--leaf); color: var(--forest-deep); font-size: 9.5px; font-weight: 800; letter-spacing: .3px; text-transform: uppercase; }
-.payment-icon { display: inline-grid; place-items: center; width: 28px; height: 28px; flex: none; border-radius: 7px; font-size: 17px; font-weight: 800; } .payment-icon svg { width: 19px; height: 19px; } .payment-icon-paypal { background: #e8f0ff; color: #1554b8; font-family: Arial, sans-serif; font-style: italic; } .payment-icon-cashapp { background: #dcf8e6; color: #15803d; } .payment-icon-venmo { background: #e0f2fe; color: #1479a8; font-family: Georgia, serif; font-style: italic; } .payment-icon-bank { background: #f7f1df; color: #97742c; } .payment-icon-card { background: #edf0f2; color: #46535b; } .pay-steps { padding-left: 20px; line-height: 1.6; } #btc-address { width: 100%; }
 
 .social-login { display: grid; gap: 11px; margin: 22px 0 6px; }
 .social-button { display: flex; align-items: center; justify-content: center; gap: 11px; min-height: 48px; padding: 0 18px; border: 1px solid #d6dfd8; border-radius: 8px; background: #fff; color: #1d2b22; font-weight: 700; font-size: 14px; text-decoration: none; transition: background .15s, transform .15s, box-shadow .15s; }
