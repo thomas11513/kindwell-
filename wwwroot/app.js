@@ -79,7 +79,71 @@ function cardMarkup(campaign, index) {
 
 function card(campaign, index) {
   const href = `/fundraisers/${encodeURIComponent(campaign.slug)}#comment-form`;
-  return cardMarkup(campaign, index).replace("</article>", `<a class="card-comment" href="${href}" aria-label="Comment on ${esc(campaign.title)}"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H5l1.5-3A8.5 8.5 0 1 1 21 11.5Z"/></svg><span>Comment</span></a></article>`);
+  return cardMarkup(campaign, index).replace("</article>", `<a class="card-comment" href="${href}" data-comment-slug="${esc(campaign.slug)}" data-comment-title="${esc(campaign.title)}" aria-label="Comment on ${esc(campaign.title)}"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H5l1.5-3A8.5 8.5 0 1 1 21 11.5Z"/></svg><span>Comment</span></a></article>`);
+}
+
+document.addEventListener("click", event => {
+  const link = event.target.closest("a[data-comment-slug]");
+  if (!link || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  openCommentDialog(link);
+});
+
+function commentMarkup(item) {
+  return `<article class="comment"><div class="comment-header"><span class="comment-avatar" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-4 3-6 7-6s7 2 7 6"/></svg></span><div class="comment-author"><strong>${esc(item.name)}</strong><time datetime="${esc(item.createdAt)}">${esc(new Date(item.createdAt).toLocaleString())}</time></div></div><p>${esc(item.body)}</p></article>`;
+}
+
+function postComment(slug, name, body) {
+  return request(`/api/fundraisers/${encodeURIComponent(slug)}/comments`, { method: "POST", body: JSON.stringify({ name, body }) });
+}
+
+function openCommentDialog(link) {
+  let root = document.querySelector("#modal-root");
+  if (!root) {
+    document.body.insertAdjacentHTML("beforeend", `<div id="modal-root"></div>`);
+    root = document.querySelector("#modal-root");
+  }
+  const previousOverflow = document.body.style.overflow;
+  document.body.style.overflow = "hidden";
+  root.innerHTML = `<div class="modal-backdrop" role="presentation"><section class="auth-wrap" role="dialog" aria-modal="true" aria-labelledby="comment-dialog-title"><div class="auth-panel"><button type="button" class="modal-close" aria-label="Close comment window">×</button><h1 id="comment-dialog-title">Leave a comment</h1><p>${esc(link.dataset.commentTitle)}</p><form class="admin-form" id="comment-dialog-form"><label for="comment-dialog-name">Your name</label><input id="comment-dialog-name" autocomplete="name" maxlength="100" required><label for="comment-dialog-body">Your comment</label><textarea id="comment-dialog-body" maxlength="2000" required></textarea><p class="secure-copy">Your name and comment will be public. No account or email is needed.</p><button class="button" type="submit">Send comment</button><p class="notice" role="status" aria-live="polite"></p></form></div></section></div>`;
+  const dialog = root.querySelector('[role="dialog"]');
+  let active = true;
+  const close = () => {
+    active = false;
+    document.removeEventListener("keydown", handleKey);
+    document.body.style.overflow = previousOverflow;
+    root.innerHTML = "";
+    if (link.isConnected) link.focus();
+  };
+  const handleKey = event => {
+    if (event.key === "Escape") { event.preventDefault(); close(); return; }
+    if (event.key !== "Tab") return;
+    const focusable = [...dialog.querySelectorAll("button:not(:disabled), input:not(:disabled), textarea:not(:disabled), a[href]")];
+    if (!focusable.length) return;
+    if (!dialog.contains(document.activeElement)) { event.preventDefault(); (event.shiftKey ? focusable[focusable.length - 1] : focusable[0]).focus(); }
+    else if (event.shiftKey && document.activeElement === focusable[0]) { event.preventDefault(); focusable[focusable.length - 1].focus(); }
+    else if (!event.shiftKey && document.activeElement === focusable[focusable.length - 1]) { event.preventDefault(); focusable[0].focus(); }
+  };
+  document.addEventListener("keydown", handleKey);
+  root.querySelector(".modal-close").addEventListener("click", close);
+  root.querySelector(".modal-backdrop").addEventListener("click", event => { if (event.target === event.currentTarget) close(); });
+  root.querySelector("#comment-dialog-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector('button[type="submit"]');
+    const notice = form.querySelector(".notice");
+    button.disabled = true;
+    notice.textContent = "Sending comment...";
+    try {
+      const comment = await postComment(link.dataset.commentSlug, form.querySelector("#comment-dialog-name").value, form.querySelector("#comment-dialog-body").value);
+      if (!active) return;
+      form.outerHTML = `<div class="comment-dialog-result"><p role="status">Your comment has been posted.</p>${commentMarkup(comment)}<a class="button" href="${esc(link.getAttribute("href"))}">View all comments</a></div>`;
+      root.querySelector(".comment-dialog-result a").focus();
+    } catch (issue) {
+      if (active) { notice.textContent = issue.message; button.disabled = false; }
+    }
+  });
+  root.querySelector("#comment-dialog-name").focus();
 }
 
 function setupCardNavigation(root, availableCampaigns) {
@@ -178,7 +242,7 @@ function setupComments(slug) {
   const loadComments = async (page = 1) => {
     try {
       const result = await request(`${endpoint}?page=${page}`);
-      document.querySelector("#comments-list").innerHTML = result.items.map(item => `<article class="comment"><div class="comment-header"><span class="comment-avatar" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-4 3-6 7-6s7 2 7 6"/></svg></span><div class="comment-author"><strong>${esc(item.name)}</strong><time datetime="${esc(item.createdAt)}">${esc(new Date(item.createdAt).toLocaleString())}</time></div></div><p>${esc(item.body)}</p></article>`).join("") || `<p class="donor-count">No comments yet. Be the first to share a message.</p>`;
+      document.querySelector("#comments-list").innerHTML = result.items.map(commentMarkup).join("") || `<p class="donor-count">No comments yet. Be the first to share a message.</p>`;
       const pagination = document.querySelector("#comments-pagination");
       pagination.innerHTML = `<button type="button" data-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>Previous</button><span>Page ${page}</span><button type="button" data-page="${page + 1}" ${result.hasMore ? "" : "disabled"}>Next</button>`;
       pagination.querySelectorAll("button").forEach(button => button.addEventListener("click", () => void loadComments(Number(button.dataset.page))));
@@ -191,7 +255,7 @@ function setupComments(slug) {
     button.disabled = true;
     notice.textContent = "Sending comment...";
     try {
-      await request(endpoint, { method: "POST", body: JSON.stringify({ name: document.querySelector("#comment-name").value, body: document.querySelector("#comment-body").value }) });
+      await postComment(slug, document.querySelector("#comment-name").value, document.querySelector("#comment-body").value);
       form.reset();
       notice.textContent = "Your comment has been posted.";
       await loadComments(1);

@@ -43,7 +43,7 @@ dotnet run --urls http://localhost:5080
 
 Open `/admin` to manage campaign drafts, publishing, images, goals, and donation records. Admin APIs require a role-protected, HTTP-only, same-site cookie and antiforgery token. Login is rate limited. For deployment, use HTTPS; the admin cookie is marked Secure outside Development.
 
-The Comments tab lets the administrator review and delete comments. New comments require a name and comment text, both public. Older comments remain attributed to "Kindwell visitor"; email addresses collected for those comments remain private and visible to administrators. Visitors should not include private details in names or comments. Comment records are deleted when their fundraiser is deleted.
+The comment icon on each fundraiser card opens a form for a name and comment, both public. Visitors can also comment on the fundraiser page. The Comments tab lets the administrator review and delete comments. Older comments remain attributed to "Kindwell visitor"; email addresses collected for those comments remain private and visible to administrators. Visitors should not include private details in names or comments. Comment records are deleted when their fundraiser is deleted.
 
 ## Paylio hosted checkout
 
