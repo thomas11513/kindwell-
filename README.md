@@ -1,6 +1,6 @@
 # Kindwell
 
-Kindwell is a single-administrator community fundraising site built with ASP.NET Core 8, SQLite, and 1pay.cx hosted card checkout.
+Kindwell is a single-administrator community fundraising site built with ASP.NET Core 8, SQLite, and Paylio hosted checkout.
 
 ## Run locally
 
@@ -29,7 +29,7 @@ The application uses ASP.NET Core 8, SQLite, and a small browser-native JavaScri
 - [ ] Refund processing, processor fee/reconciliation data, settlements, reserves, beneficiary verification, and payouts.
 - [ ] Multi-currency and country eligibility, notifications, support tooling, and the full operational/legal requirements for live fundraising.
 
-The pasted product brief describes a larger platform than the current implementation. User accounts and email verification, organizer workspaces, multi-currency support, country eligibility, beneficiary verification and payouts, refunds, notifications, and support tooling are not implemented. New donations use 1pay.cx's hosted card checkout. Kindwell does not collect card numbers, CVV, PINs, or one-time codes. Configure a branded checkout host and test credentials before accepting donations, and review the legal and operational requirements for live fundraising.
+The pasted product brief describes a larger platform than the current implementation. User accounts and email verification, organizer workspaces, multi-currency support, country eligibility, beneficiary verification and payouts, refunds, notifications, and support tooling are not implemented. New donations use Paylio's hosted checkout. Kindwell does not collect card numbers, CVV, PINs, or one-time codes. Configure Paylio and verify the full checkout before accepting donations, and review the legal and operational requirements for live fundraising.
 
 ## Administrator access
 
@@ -45,24 +45,27 @@ Open `/admin` to manage campaign drafts, publishing, images, goals, and donation
 
 The Comments tab lets the administrator review and delete comments. Comment text is public; the submitted email address is stored for administration and is not included in public responses. Comments can contain information entered by visitors, so visitors should not include private details. Comment records are deleted when their fundraiser is deleted.
 
-## 1pay.cx hosted card checkout
+## Paylio hosted checkout
 
-Configure 1pay.cx's white-label checkout using its [white-label checkout guide](https://1pay.cx/docs/white-label). Finish its host/DNS and branding setup, then set the exact hostname in `ONEPAY_CHECKOUT_HOST`. The card checkout will use your configured brand and domain, though the donor will leave the Kindwell page URL while entering payment details and return to Kindwell afterward.
+New donations use Paylio's hosted checkout. Kindwell offers Card without a payment-method selector, but Paylio may show its own provider choices, including non-card options; the Paylio API does not document a card-only restriction for those choices. Paylio settles in USDC on Polygon, not directly into a bank account. Confirm the wallet and fees in Paylio before accepting donations.
 
 Set these server-side values (never commit keys):
 
 ```powershell
-$env:ONEPAY_API_KEY = "pk_test_..."             # use the live key only after sandbox testing
-$env:ONEPAY_WEBHOOK_SECRET = "whsec_test_..."   # matching mode's signing secret from GET /v1/me
-$env:ONEPAY_CHECKOUT_HOST = "pay.example.com"   # exact branded hostname; no scheme
+$env:PAYLIO_API_KEY = "your-paylio-api-key"
+$env:PAYLIO_WALLET_ADDRESS = "your-approved-polygon-wallet"
 $env:PUBLIC_BASE_URL = "https://kindwell.example.com"
 ```
 
-Kindwell creates a 1pay.cx payment with `method: "card"` and an idempotency key. Checkout links are accepted only over HTTPS from the configured branded host. The `/api/onepay/webhook` endpoint validates 1pay.cx's timestamped HMAC-SHA256 signature and re-fetches the payment through the authenticated API before confirming it. The donor's email is sent to 1pay.cx for the receipt. Test the complete flow with sandbox API and webhook credentials before switching to live mode.
+The public HTTPS URL must be reachable by Paylio even for local testing. Approve the payout wallet in Paylio. Kindwell stores each payment's webhook secret privately, verifies the signed callback, and re-fetches the status from Paylio before confirming a gift. Paylio says webhooks are delivered only once; missed callbacks need reconciliation by checking payment status. Paylio's published API documents live keys, so verify whether a test environment is available before running a transaction. Paylio receives the donor email.
+
+## Legacy 1pay.cx payments
+
+Keep `ONEPAY_API_KEY` and `ONEPAY_WEBHOOK_SECRET` configured while previously created 1pay.cx payments are still pending. Their webhook and authenticated verification paths remain available, but new donations no longer use 1pay.cx.
 
 ## Legacy Paymentwings payments
 
-The following legacy credentials/routes are only for previously created Paymentwings payments; new donation checkouts use 1pay.cx.
+The following legacy credentials/routes are only for previously created Paymentwings payments; new donation checkouts use Paylio.
 
 Create a Paymentwings account and copy your key pair from the dashboard (Settings > API). Configure the server (never commit keys):
 
@@ -78,23 +81,23 @@ Processing fees depend on the donor's country and payment method and are deducte
 ## Configuration and operations
 
 - `ADMIN_EMAIL`, `ADMIN_PASSWORD`: required for administrator login.
-- `ONEPAY_API_KEY`, `ONEPAY_WEBHOOK_SECRET`: required for new 1pay.cx payments and signed webhook verification.
-- `ONEPAY_CHECKOUT_HOST`: exact HTTPS checkout hostname configured in 1pay.cx; a response with any other host is rejected.
-- `PUBLIC_BASE_URL`: canonical HTTPS Kindwell origin used for the 1pay.cx return and webhook URLs in production.
-- New donations use card-only 1pay.cx hosted checkout. Kindwell never asks for or receives card numbers, expiry, CVV, PIN, or one-time codes. The donor's name and email are stored and shown in the admin Currency finance tab and CSV export.
-- `DONATION_CURRENCIES` (default `USD,NGN,GBP,EUR`): currencies offered at checkout. A currency is only shown when an exchange rate is available and 1pay.cx supports it; only two-decimal currencies are supported.
+- `PAYLIO_API_KEY`, `PAYLIO_WALLET_ADDRESS`: Paylio API key and approved Polygon payout wallet required for new payments.
+- `ONEPAY_API_KEY`, `ONEPAY_WEBHOOK_SECRET`: retained only for verifying previous 1pay.cx payments.
+- `PUBLIC_BASE_URL`: publicly reachable HTTPS Kindwell origin used for Paylio return and webhook URLs.
+- Kindwell shows Card and redirects to Paylio, which may display other provider options. Kindwell never asks for or receives card numbers, expiry, CVV, PIN, or one-time codes. The donor's name and email are stored and shown in the admin Currency finance tab and CSV export.
+- `DONATION_CURRENCIES`: configured currencies are limited to Paylio's documented USD, EUR, CAD, INR and GBP; USD is always offered. Non-USD currencies require an available exchange rate. Paylio accepts a maximum of 10,000 in the selected currency, and provider minimums may vary.
 - `EXCHANGE_RATE_API_URL` (default `https://open.er-api.com/v6/latest/USD`): rate source returning `{ "result": "success", "rates": { ... } }` with USD as base. No key is needed for the default; if you switch to a keyed provider put the URL (including its key) in this environment variable only.
 - `RATE_CACHE_MINUTES` (default 60) and `RATE_MAX_STALE_HOURS` (default 24): rates are cached and stored in the database; if the provider is down, stored rates are used (flagged as stale) until they exceed the maximum age, after which non-USD checkout is paused.
-- Test and live modes are detected from the 1pay.cx API key prefix. Each donation records its mode, and the Currency finance tab filters by mode.
+- The Currency finance tab defaults to the current Paylio key's mode; select All to view historical payments from other providers and modes.
 
 ## Multi-currency accounting
 
 - Each donation keeps the original amount and currency, the exchange rate and the time it was recorded (when checkout started), and the resulting USD equivalent. Historical records are never recalculated with newer rates. Amounts are integer minor units; rates are stored as exact decimal text.
 - The USD equivalent is an **estimate**. Kindwell does not convert or trade money. Charged amount, processor fee and settlement amount are stored only when the payment provider reports them.
-- 1pay.cx card settlement and any currency conversion are configured in your 1pay.cx account. Reconcile using the settlement figures shown by the provider; Kindwell does not execute payouts.
-- 1pay.cx webhooks use timestamped HMAC-SHA256 signatures; all new payments are re-verified through its authenticated API before being recorded. Legacy Paymentwings and Paylio records continue to use their existing verification paths.
+- Paylio settles to the configured Polygon wallet in USDC. Reconcile using the settlement figures shown by the provider; Kindwell does not execute payouts.
+- Paylio webhooks use per-payment HMAC-SHA256 signatures; payments are re-verified through its authenticated API before being recorded. Legacy Paymentwings and 1pay.cx records continue to use their existing verification paths.
 - Refunds are not implemented, so the refunded count only reflects rows whose status is `refunded`.
-- Donor email is sent to 1pay.cx for new payments; the app stores the donor's chosen display name.
+- Donor email is sent to Paylio for new payments; the app stores the donor's chosen display name.
 - Admin endpoints: `GET /api/admin/finance`, `GET /api/admin/finance/payments`, `GET /api/admin/finance/export.csv`; public: `GET /api/rates`.
 - `ASPNETCORE_ENVIRONMENT`: set to `Production` in production.
 - Back up `App_Data/kindwell.db` and `wwwroot/uploads/` together.

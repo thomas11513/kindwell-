@@ -69,7 +69,9 @@ var app = builder.Build();
 await InitializeDatabase();
 // Retained to verify donations created before the 1pay.cx checkout migration.
 var paylioHttp = new HttpClient { BaseAddress = new Uri("https://paylio.org/api/v1/"), Timeout = TimeSpan.FromSeconds(20) };
-IReadOnlyList<string> donationCurrencies = CurrencyRules.ParseAllowed(Environment.GetEnvironmentVariable("DONATION_CURRENCIES"));
+var paylioCurrencies = new[] { "USD", "EUR", "CAD", "INR", "GBP" };
+IReadOnlyList<string> donationCurrencies = CurrencyRules.ParseAllowed(Environment.GetEnvironmentVariable("DONATION_CURRENCIES"))
+    .Where(paylioCurrencies.Contains).ToList();
 if (donationCurrencies.Count == 0) donationCurrencies = ["USD"];
 var rateCacheMinutes = int.TryParse(Environment.GetEnvironmentVariable("RATE_CACHE_MINUTES"), out var configuredCache) ? Math.Clamp(configuredCache, 1, 1440) : 60;
 var rateMaxStaleHours = int.TryParse(Environment.GetEnvironmentVariable("RATE_MAX_STALE_HOURS"), out var configuredStale) ? Math.Clamp(configuredStale, 1, 168) : 24;
@@ -977,13 +979,10 @@ admin.MapDelete("/fundraisers/{id:long}", async (long id, HttpContext context, I
 app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery antiforgery, CancellationToken cancellationToken) =>
 {
     if (!await IsValidRequestToken(context, antiforgery)) return Results.BadRequest(new { error = "Please refresh and try again." });
-    var apiKey = Environment.GetEnvironmentVariable("ONEPAY_API_KEY")?.Trim();
-    var webhookSecret = Environment.GetEnvironmentVariable("ONEPAY_WEBHOOK_SECRET");
-    var checkoutHost = Environment.GetEnvironmentVariable("ONEPAY_CHECKOUT_HOST")?.Trim().TrimEnd('.').ToLowerInvariant();
-    if (string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(webhookSecret) || string.IsNullOrWhiteSpace(checkoutHost)
-        || Uri.CheckHostName(checkoutHost) == UriHostNameType.Unknown
-        || checkoutHost.Contains('/') || checkoutHost.Contains(':'))
-        return Results.Problem("1pay.cx hosted checkout is not fully configured. Please try again later.", statusCode: 503);
+    var apiKey = Environment.GetEnvironmentVariable("PAYLIO_API_KEY")?.Trim();
+    var wallet = Environment.GetEnvironmentVariable("PAYLIO_WALLET_ADDRESS")?.Trim();
+    if (string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(wallet))
+        return Results.Problem("Paylio checkout is not fully configured. Please try again later.", statusCode: 503);
     using var payload = await JsonDocument.ParseAsync(context.Request.Body, cancellationToken: cancellationToken);
     var root = payload.RootElement;
     var slug = root.TryGetProperty("slug", out var slugValue) ? slugValue.GetString()?.Trim() : null;
@@ -995,6 +994,7 @@ app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery 
     if (slug is null || donorName.Length > 80) return Results.BadRequest(new { error = "Check your details and try again." });
     if (!donationCurrencies.Contains(currency)) return Results.BadRequest(new { error = "That currency isn't available for donations." });
     if (!IsValidEmail(donorEmail)) return Results.BadRequest(new { error = "Enter a valid email address for your payment receipt." });
+    if (amount is < 1 or > 1000000) return Results.BadRequest(new { error = "Paylio accepts amounts up to 10,000 in the selected currency." });
 
     RateSnapshot? rates = null;
     var unitsPerUsd = 1m;
@@ -1008,9 +1008,10 @@ app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery 
     if (usdCents < 100 || usdCents > 10000000) return Results.BadRequest(new { error = "Choose a gift worth between $1 and $100,000 USD." });
 
     var configuredOrigin = Environment.GetEnvironmentVariable("PUBLIC_BASE_URL");
-    var origin = string.IsNullOrWhiteSpace(configuredOrigin) ? $"{context.Request.Scheme}://{context.Request.Host}" : configuredOrigin.TrimEnd('/');
-    if (!Uri.TryCreate(origin, UriKind.Absolute, out var publicUri) || (app.Environment.IsProduction() && (publicUri.Scheme != "https" || string.IsNullOrWhiteSpace(configuredOrigin))))
-        return Results.Problem("A secure public URL is required to start checkout.", statusCode: 503);
+    var origin = configuredOrigin?.TrimEnd('/');
+    if (!Uri.TryCreate(origin, UriKind.Absolute, out var publicUri) || publicUri.Scheme != Uri.UriSchemeHttps
+        || !string.IsNullOrEmpty(publicUri.UserInfo) || publicUri.AbsolutePath != "/" || !string.IsNullOrEmpty(publicUri.Query) || !string.IsNullOrEmpty(publicUri.Fragment))
+        return Results.Problem("A public HTTPS PUBLIC_BASE_URL is required for Paylio checkout and webhooks.", statusCode: 503);
 
     await using var db = await OpenDatabase(cancellationToken);
     await using var fundraiserCommand = db.CreateCommand();
@@ -1037,7 +1038,7 @@ app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery 
     insert.Parameters.AddWithValue("$rate_at", rates is null ? DBNull.Value : rates.FetchedAt.ToString("O"));
     insert.Parameters.AddWithValue("$rate_source", rates is null ? DBNull.Value : rates.Source);
     insert.Parameters.AddWithValue("$mode", CurrentMode());
-    insert.Parameters.AddWithValue("$provider", "onepay");
+    insert.Parameters.AddWithValue("$provider", "paylio");
     insert.Parameters.AddWithValue("$name", donorName.Length == 0 ? "Kind donor" : donorName);
     insert.Parameters.AddWithValue("$anonymous", anonymous ? 1 : 0);
     insert.Parameters.AddWithValue("$tx_ref", txRef);
@@ -1047,45 +1048,46 @@ app.MapPost("/api/donations/checkout", async (HttpContext context, IAntiforgery 
 
     try
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, "v1/payments")
+        using var request = new HttpRequestMessage(HttpMethod.Post, "wallet")
         {
             Content = JsonContent.Create(new
             {
-                amount = amount / 100m,
+                address = wallet,
+                callback = $"{origin}/api/paylio/webhook?ref={txRef}",
+                amount = (amount / 100m).ToString("0.00", CultureInfo.InvariantCulture),
                 currency,
                 email = donorEmail,
-                productName = $"Kindwell donation: {title}",
-                reference = txRef,
-                redirectUrl = $"{origin}/thank-you?tx_ref={txRef}",
-                notifyUrl = $"{origin}/api/onepay/webhook",
-                method = "card"
+                note = $"Kindwell {txRef}",
+                returnUrl = $"{origin}/thank-you?tx_ref={txRef}"
             })
         };
-        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
-        request.Headers.Add("Idempotency-Key", txRef);
-        using var response = await onePayHttp.SendAsync(request, cancellationToken);
+        request.Headers.Add("X-API-Key", apiKey);
+        using var response = await paylioHttp.SendAsync(request, cancellationToken);
         using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
         var data = result.RootElement;
-        var transactionId = data.TryGetProperty("id", out var idValue) ? idValue.GetString() : null;
-        var checkoutLink = data.TryGetProperty("url", out var urlValue) ? urlValue.GetString() : null;
-        if (!response.IsSuccessStatusCode || string.IsNullOrWhiteSpace(transactionId)
+        var transactionId = data.TryGetProperty("payment_id", out var idValue) ? idValue.GetString() : null;
+        var secret = data.TryGetProperty("ipn_token", out var secretValue) ? secretValue.GetString() : null;
+        var checkoutLink = data.TryGetProperty("checkout_url", out var urlValue) ? urlValue.GetString() : null;
+        if (!response.IsSuccessStatusCode || string.IsNullOrWhiteSpace(transactionId) || string.IsNullOrWhiteSpace(secret)
             || !Uri.TryCreate(checkoutLink, UriKind.Absolute, out var checkoutUri)
             || checkoutUri.Scheme != Uri.UriSchemeHttps
-            || !checkoutUri.Host.Equals(checkoutHost, StringComparison.OrdinalIgnoreCase)
-            || !string.IsNullOrEmpty(checkoutUri.UserInfo))
+            || !checkoutUri.Host.Equals("paylio.org", StringComparison.OrdinalIgnoreCase)
+            || !checkoutUri.IsDefaultPort || !string.IsNullOrEmpty(checkoutUri.UserInfo))
         {
-            app.Logger.LogWarning("1pay.cx rejected checkout for {Currency} (HTTP {Status}).", currency, (int)response.StatusCode);
-            throw new HttpRequestException("1pay.cx did not return a checkout link for the configured branded host.");
+            app.Logger.LogWarning("Paylio rejected checkout for {Currency} (HTTP {Status}).", currency, (int)response.StatusCode);
+            throw new HttpRequestException("Paylio did not return a valid checkout link and payment details.");
         }
         await using var save = db.CreateCommand();
-        save.CommandText = "UPDATE donations SET provider_transaction_id=$tid WHERE id=$id";
+        save.CommandText = "UPDATE donations SET provider_transaction_id=$tid,provider_secret=$secret WHERE id=$id";
         save.Parameters.AddWithValue("$tid", transactionId);
+        save.Parameters.AddWithValue("$secret", secret);
         save.Parameters.AddWithValue("$id", donationId);
         await save.ExecuteNonQueryAsync(cancellationToken);
-        return Results.Ok(new { url = checkoutLink, txRef, amount = amount / 100m, currency, campaign = title, provider = "1pay.cx" });
+        return Results.Ok(new { url = checkoutLink, txRef, amount = amount / 100m, currency, campaign = title, provider = "Paylio" });
     }
     catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
     {
+        app.Logger.LogWarning(ex, "Could not create Paylio checkout for {TxRef}.", txRef);
         await using var markFailed = db.CreateCommand();
         markFailed.CommandText = "UPDATE donations SET status='failed' WHERE id=$id AND status='pending'";
         markFailed.Parameters.AddWithValue("$id", donationId);
@@ -1601,12 +1603,8 @@ async Task InitializeDatabase()
 
 string CurrentMode()
 {
-    var onePayKey = Environment.GetEnvironmentVariable("ONEPAY_API_KEY");
-    if (!string.IsNullOrWhiteSpace(onePayKey))
-        return onePayKey.Contains("test", StringComparison.OrdinalIgnoreCase) ? "test" : "live";
-    // Paymentwings issues separate sandbox and live key pairs; sandbox keys run in test mode automatically.
-    var key = Environment.GetEnvironmentVariable("PAYMENTWINGS_SECRET_KEY");
-    return string.IsNullOrWhiteSpace(key) || key.Contains("test", StringComparison.OrdinalIgnoreCase) || key.Contains("sandbox", StringComparison.OrdinalIgnoreCase) ? "test" : "live";
+    var key = Environment.GetEnvironmentVariable("PAYLIO_API_KEY");
+    return !string.IsNullOrWhiteSpace(key) && key.Contains("test", StringComparison.OrdinalIgnoreCase) ? "test" : "live";
 }
 
 ModeScope ResolveMode(string? mode) => mode?.ToLowerInvariant() switch
