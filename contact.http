@@ -1,0 +1,18 @@
+@baseUrl = http://localhost:5080
+
+### Get a CSRF token (send it as X-CSRF-TOKEN on POST/DELETE; keep the cookie)
+GET {{baseUrl}}/api/csrf
+
+### Send a contact message / complaint (public, rate limited)
+POST {{baseUrl}}/api/contact
+Content-Type: application/json
+X-CSRF-TOKEN: <token>
+
+{ "name": "Ann", "email": "", "subject": "Complaint", "message": "My donation did not show up." }
+
+### Admin: list messages (requires admin session from /login)
+GET {{baseUrl}}/api/admin/messages?page=1
+
+### Admin: delete a message
+DELETE {{baseUrl}}/api/admin/messages/1
+X-CSRF-TOKEN: <token>

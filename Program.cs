@@ -42,6 +42,13 @@ builder.Services.AddRateLimiter(options =>
         AutoReplenishment = true
     }));
 });
+builder.Services.AddRateLimiter(options => options.AddPolicy("contact", context => RateLimitPartition.GetFixedWindowLimiter(context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
+{
+    PermitLimit = 3,
+    Window = TimeSpan.FromMinutes(10),
+    QueueLimit = 0,
+    AutoReplenishment = true
+})));
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(options =>
 {
     options.Cookie.Name = "kindwell.admin";
@@ -266,6 +273,33 @@ app.MapPost("/api/fundraisers/{slug}/comments", async (string slug, HttpContext 
     var id = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
     return Results.Created($"/api/fundraisers/{Uri.EscapeDataString(slug)}/comments/{id}", new CommentResponse(id, name, body, createdAt));
 }).RequireRateLimiting("comments").WithSummary("Post a fundraiser comment");
+
+app.MapPost("/api/contact", async (HttpContext context, IAntiforgery antiforgery, CancellationToken cancellationToken) =>
+{
+    var bodySize = context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>();
+    if (bodySize is { IsReadOnly: false }) bodySize.MaxRequestBodySize = 20000;
+    if (!await IsValidRequestToken(context, antiforgery)) return Results.BadRequest(new { error = "Please refresh and try again." });
+    if (!context.Request.HasJsonContentType()) return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+    CreateContactRequest? input;
+    try { input = await context.Request.ReadFromJsonAsync<CreateContactRequest>(cancellationToken); }
+    catch (JsonException) { return Results.BadRequest(new { error = "Check your message and try again." }); }
+    var name = input?.Name?.Trim() ?? "";
+    var email = input?.Email?.Trim() ?? "";
+    var subject = input?.Subject?.Trim() ?? "";
+    var message = input?.Message?.Trim() ?? "";
+    if (name.Length is < 1 or > 100) return Results.BadRequest(new { error = "Enter your name (up to 100 characters)." });
+    if (email.Length > 0 && (email.Length > 254 || !IsValidEmail(email))) return Results.BadRequest(new { error = "Enter a valid email address or leave it blank." });
+    if (subject.Length > 150) return Results.BadRequest(new { error = "Keep the subject under 150 characters." });
+    if (message.Length is < 5 or > 3000) return Results.BadRequest(new { error = "Enter a message of 5 to 3,000 characters." });
+    await using var db = await OpenDatabase(cancellationToken);
+    await using var command = db.CreateCommand();
+    command.CommandText = "INSERT INTO contact_messages(name,email,subject,message,created_at) VALUES($n,$e,$s,$m,$c)";
+    command.Parameters.AddWithValue("$n", name); command.Parameters.AddWithValue("$e", email);
+    command.Parameters.AddWithValue("$s", subject); command.Parameters.AddWithValue("$m", message);
+    command.Parameters.AddWithValue("$c", DateTimeOffset.UtcNow.ToString("O"));
+    await command.ExecuteNonQueryAsync(cancellationToken);
+    return Results.Ok(new { ok = true });
+}).RequireRateLimiting("contact").WithSummary("Send a contact or complaint message");
 
 app.MapGet("/api/people/search", async (string? q, int page = 1, int pageSize = 12) =>
 {
@@ -668,6 +702,28 @@ admin.MapDelete("/comments/{id:long}", async (long id, HttpContext context, IAnt
     command.Parameters.AddWithValue("$id", id);
     return await command.ExecuteNonQueryAsync(cancellationToken) == 0 ? Results.NotFound() : Results.NoContent();
 }).WithSummary("Delete a comment");
+admin.MapGet("/messages", async (int? page, CancellationToken cancellationToken) =>
+{
+    var currentPage = Math.Max(page ?? 1, 1);
+    await using var db = await OpenDatabase(cancellationToken);
+    await using var command = db.CreateCommand();
+    command.CommandText = "SELECT id,name,email,subject,message,created_at FROM contact_messages ORDER BY id DESC LIMIT 21 OFFSET $offset";
+    command.Parameters.AddWithValue("$offset", ((long)currentPage - 1) * 20);
+    var items = new List<object>();
+    await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+    while (await reader.ReadAsync(cancellationToken))
+        items.Add(new { id = reader.GetInt64(0), name = reader.GetString(1), email = reader.GetString(2), subject = reader.GetString(3), message = reader.GetString(4), createdAt = reader.GetString(5) });
+    var hasMore = items.Count > 20;
+    return Results.Ok(new { items = items.Take(20), hasMore });
+}).WithSummary("List contact messages");
+admin.MapDelete("/messages/{id:long}", async (long id, CancellationToken cancellationToken) =>
+{
+    await using var db = await OpenDatabase(cancellationToken);
+    await using var command = db.CreateCommand();
+    command.CommandText = "DELETE FROM contact_messages WHERE id=$id";
+    command.Parameters.AddWithValue("$id", id);
+    return await command.ExecuteNonQueryAsync(cancellationToken) == 0 ? Results.NotFound() : Results.NoContent();
+}).WithSummary("Delete a contact message");
 admin.MapGet("/start-requests", async (CancellationToken cancellationToken) =>
 {
     await using var db = await OpenDatabase(cancellationToken);
@@ -1411,6 +1467,7 @@ async Task InitializeDatabase()
         CREATE INDEX IF NOT EXISTS idx_campaign_updates_fundraiser_date ON campaign_updates(fundraiser_id,created_at DESC);
         CREATE TABLE IF NOT EXISTS fundraiser_comments(id INTEGER PRIMARY KEY AUTOINCREMENT,fundraiser_id INTEGER NOT NULL REFERENCES fundraisers(id) ON DELETE CASCADE,email TEXT NOT NULL,name TEXT NOT NULL DEFAULT 'Kindwell visitor',body TEXT NOT NULL,created_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_fundraiser_comments_fundraiser_id ON fundraiser_comments(fundraiser_id,id DESC);
+        CREATE TABLE IF NOT EXISTS contact_messages(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,email TEXT NOT NULL DEFAULT '',subject TEXT NOT NULL DEFAULT '',message TEXT NOT NULL,created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS ledger_transactions(id INTEGER PRIMARY KEY AUTOINCREMENT,donation_id INTEGER NOT NULL UNIQUE REFERENCES donations(id) ON DELETE RESTRICT,currency TEXT NOT NULL CHECK(currency='usd'),amount INTEGER NOT NULL CHECK(amount>0),occurred_at TEXT NOT NULL,provider_reference TEXT,created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS ledger_postings(id INTEGER PRIMARY KEY AUTOINCREMENT,transaction_id INTEGER NOT NULL REFERENCES ledger_transactions(id) ON DELETE RESTRICT,account_code TEXT NOT NULL CHECK(account_code IN ('processor_clearing','campaign_funds_payable')),side TEXT NOT NULL CHECK(side IN ('debit','credit')),amount INTEGER NOT NULL CHECK(amount>0),UNIQUE(transaction_id,account_code,side));
         CREATE INDEX IF NOT EXISTS idx_ledger_transactions_occurred_at ON ledger_transactions(occurred_at DESC);
@@ -1968,6 +2025,8 @@ record FundraiserInput(string Title, string Summary, string Story, string Image,
 record CampaignUpdateInput(string Title, string Body);
 /// <summary>Comment text and public name supplied by a visitor.</summary>
 sealed record CreateCommentRequest(string? Name, string? Body);
+/// <summary>Payload for the Contact Us form.</summary>
+sealed record CreateContactRequest(string? Name, string? Email, string? Subject, string? Message);
 /// <summary>A public comment and its author's name.</summary>
 sealed record CommentResponse(long Id, string Name, string Body, DateTimeOffset CreatedAt);
 /// <summary>A comment for administrators, including any legacy private email.</summary>

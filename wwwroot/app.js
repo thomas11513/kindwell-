@@ -25,11 +25,11 @@ function brand() {
 }
 
 function header() {
-  return `<header class="site-header"><div class="header-inner">${brand()}<nav class="main-nav" id="main-nav" aria-label="Main navigation"><a href="/#home">Home</a><a href="/fundraisers">View ongoing fundraisers</a><a href="/people">People</a><a href="/#how-it-works">How it works</a><a href="/#about">About us</a><a href="/#contact">Contact</a></nav><div class="header-actions"><a class="login-link" href="/login">Log in</a><a class="button button-small" href="/#fundraisers">Find a cause</a><button class="mobile-menu" aria-label="Toggle navigation" aria-expanded="false" aria-controls="main-nav"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div></div></header>`;
+  return `<header class="site-header"><div class="header-inner">${brand()}<nav class="main-nav" id="main-nav" aria-label="Main navigation"><a href="/#home">Home</a><a href="/fundraisers">View ongoing fundraisers</a><a href="/people">People</a><a href="/#how-it-works">How it works</a><a href="/#about">About us</a><a href="/contact">Contact</a></nav><div class="header-actions"><a class="login-link" href="/login">Log in</a><a class="button button-small" href="/#fundraisers">Find a cause</a><button class="mobile-menu" aria-label="Toggle navigation" aria-expanded="false" aria-controls="main-nav"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div></div></header>`;
 }
 
 function footer() {
-  return `<footer class="site-footer" id="contact"><div class="footer-inner"><div class="footer-top"><div class="footer-brand">${brand()}<p>Small acts of care can make a lasting difference. Good things grow together.</p></div><div class="footer-links"><a href="/#fundraisers">Browse fundraisers</a><a href="/people">People</a><a href="/#how-it-works">How it works</a><a href="mailto:hello@kindwell.care">Contact</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="https://instagram.com" target="_blank" rel="noreferrer">Instagram</a><a href="https://facebook.com" target="_blank" rel="noreferrer">Facebook</a><a href="/admin">Administrator</a></div></div><div class="footer-bottom"><span>© 2016 Kindwell. Made with care.</span><span>Questions? <a href="mailto:hello@kindwell.care">hello@kindwell.care</a></span></div></div></footer>`;
+  return `<footer class="site-footer" id="contact"><div class="footer-inner"><div class="footer-top"><div class="footer-brand">${brand()}<p>Small acts of care can make a lasting difference. Good things grow together.</p></div><div class="footer-links"><a href="/#fundraisers">Browse fundraisers</a><a href="/people">People</a><a href="/#how-it-works">How it works</a><a href="/contact">Contact</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="https://instagram.com" target="_blank" rel="noreferrer">Instagram</a><a href="https://facebook.com" target="_blank" rel="noreferrer">Facebook</a></div></div><div class="footer-bottom"><span>© 2016 Kindwell. Made with care.</span><span>Questions? <a href="mailto:hello@kindwell.care">hello@kindwell.care</a></span></div></div></footer>`;
 }
 
 function progress(campaign) { return Math.min(100, Math.round(campaign.raised / campaign.goal * 100)); }
@@ -225,9 +225,18 @@ async function renderDetail(slug) {
   appRoot.innerHTML = `${header()}<main class="page-wrap page-shell"><p class="breadcrumbs"><a href="/">Home</a> / <a href="/#fundraisers">Fundraisers</a> / ${esc(campaign.title)}</p><div class="detail-layout"><article class="detail-main"><h1>${esc(campaign.title)}</h1>${organizerMarkup || ""}<img class="detail-cover" src="${esc(campaign.image)}" alt="Image for ${esc(campaign.title)}"><h2>Why this matters</h2><p class="detail-story">${esc(campaign.story)}</p><div class="share-row"><button id="share-button" type="button">Share fundraiser</button><button id="copy-button" type="button">Copy link</button></div></article><aside class="detail-sidebar"><div class="raised-line"><span><strong>${money(campaign.raised)}</strong> raised</span><span>of ${money(campaign.goal)}</span></div><div class="progress-track" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${pct} percent funded"><div class="progress-fill" style="width:${pct}%"></div></div><div class="detail-stat">${campaign.donations} confirmed gifts · ${pct}% of goal</div><button class="button" id="open-donate">Donate</button><h3>Recent gifts</h3>${data.recentDonations.length ? data.recentDonations.map(donation => `<div class="donation-row"><span>${esc(donation.name)}</span><strong>${money(donation.amount)}</strong></div>`).join("") : `<p class="donor-count">No gifts have been confirmed through Kindwell yet.</p>`}<p class="trust-note">Some campaign totals may include support received before Kindwell; the donation count and recent gifts here show only donations confirmed through this site. Gifts are processed securely by our payment partner. Kindwell does not store card details. Our payment partner deducts processing fees from the payment; the exact fee depends on country and payment method and is shown at checkout. Refund requests may be submitted to <a href="mailto:hello@kindwell.care">hello@kindwell.care</a> within 30 days and are reviewed individually; our payment partner's processing fees may not be refundable.</p></aside></div></main>${footer()}<div id="modal-root"></div>`;
   appRoot.innerHTML = `${header()}<main class="page-wrap page-shell"><p class="breadcrumbs"><a href="/">Home</a> / <a href="/#fundraisers">Fundraisers</a> / ${esc(campaign.title)}</p><div class="detail-layout"><article class="detail-main"><h1>${esc(campaign.title)}</h1>${organizerMarkup || ""}<img class="detail-cover" src="${esc(campaign.image)}" alt="Image for ${esc(campaign.title)}"><h2>Why this matters</h2><p class="detail-story">${esc(campaign.story)}</p><div class="share-row"><button id="share-button" type="button">Share fundraiser</button><button id="copy-button" type="button">Copy link</button></div></article><aside class="detail-sidebar"><div class="raised-line"><span><strong>${money(campaign.raised)}</strong> raised</span><span>of ${money(campaign.goal)}</span></div><div class="progress-track" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${pct} percent funded"><div class="progress-fill" style="width:${pct}%"></div></div><div class="detail-stat">${campaign.donations} gifts confirmed through Kindwell${campaign.reportedDonations ? ` · ${campaign.reportedDonations} reported before Kindwell` : ""} · ${pct}% of goal</div><button class="button" id="open-donate">Donate</button><h3>Recent gifts</h3>${data.recentDonations.length ? data.recentDonations.map(donation => `<div class="donation-row"><span>${esc(donation.name)}</span><strong>${money(donation.amount)}</strong></div>`).join("") : `<p class="donor-count">No gifts have been confirmed through Kindwell yet.</p>`}<p class="trust-note">Your gift is processed over an encrypted connection, and Kindwell never stores your card details. A small processing fee is taken from each gift and shown before you pay. Questions about a donation? Contact us at <a href="mailto:hello@kindwell.care">hello@kindwell.care</a>.</p></aside></div></main>${footer()}<div id="modal-root"></div>`;
   setupMenu();
-  document.querySelector(".detail-main").insertAdjacentHTML("beforeend", updatesMarkup);
+  document.querySelector(".detail-sidebar").remove();
+  const latest = data.recentDonations[0];
+  const ring = `<span class="ring" style="--pct:${pct}" aria-label="${pct} percent funded"><b>${pct}%</b></span>`;
+  const main = document.querySelector(".detail-main");
+  main.querySelector("h1").remove();
+  main.querySelector(".detail-cover").replaceWith(Object.assign(document.createElement("div"), { className: "hero-photo", innerHTML: `<img src="${esc(campaign.image)}" alt="Image for ${esc(campaign.title)}"><div class="hero-shade"></div>${campaign.organizerName ? `<span class="hero-organizer">${esc(campaign.organizerName)}</span>` : ""}<h1>${esc(campaign.title)}</h1>` }));
+  main.insertAdjacentHTML("afterbegin", `<div class="ring-row">${ring}<div><strong>${money(campaign.raised)} raised</strong> of ${money(campaign.goal)}<small>${Number(campaign.donations + (campaign.reportedDonations || 0)).toLocaleString()} donations</small></div></div>`);
+  document.querySelector(".site-footer").insertAdjacentHTML("beforebegin", `<div class="donate-bar">${ring}<div class="donate-bar-text"><strong>${money(campaign.raised)} raised</strong> of ${money(campaign.goal)}${latest ? `<small>${esc(latest.name)} donated ${money(latest.amount)}</small>` : ""}</div><div class="donate-bar-actions"><button class="pill pill-donate" id="bar-donate" type="button">Donate</button><button class="pill pill-share" id="bar-share" type="button">Share</button></div></div>`);
+  document.querySelector("#bar-donate").addEventListener("click", () => openDonation(campaign));
+  document.querySelector("#bar-share").addEventListener("click", () => document.querySelector("#share-button").click());
+  main.insertAdjacentHTML("beforeend", updatesMarkup);
   setupComments(campaign.slug);
-  document.querySelector("#open-donate").addEventListener("click", () => openDonation(campaign));
   document.querySelector("#share-button").addEventListener("click", async () => {
     if (navigator.share) await navigator.share({ title: campaign.title, url: location.href });
     else await navigator.clipboard.writeText(location.href);
@@ -450,7 +459,21 @@ async function renderPublicLogin() {
     ? `<h1>Welcome, ${esc(me.user.name)}</h1><p>You're signed in with ${esc(names[me.user.provider] || "your account")}.</p><a class="button" href="/start/1">Start Kindwell fundraiser</a><button class="button button-light" id="logout" type="button" style="margin-top:10px">Log out</button>`
     : `<h1>Log in or sign up</h1><p>Welcome to Kindwell. Log in to continue.</p><form id="email-login" class="admin-form"><label for="login-email">Email</label><input id="login-email" type="email" autocomplete="email" required><label for="login-password">Password</label><input id="login-password" type="password" autocomplete="current-password" required><button class="button" type="submit">Log in</button><p style="text-align:right;margin:8px 0 0"><a href="/forgot-password">Forgot password?</a></p></form><div class="auth-divider"><span>or</span></div><div class="social-login">${["google", "apple", "facebook"].map(p => `<a class="social-button social-${p}" href="/auth/${p}" data-provider="${p}">${icons[p]}<span>Continue with ${names[p]}</span></a>`).join("")}</div><p class="notice" id="login-message" role="alert">${esc(errors[error] || "")}</p><p style="margin:14px 0 0">New to Kindwell? <a href="/signup"><strong>Sign up</strong></a></p><p class="secure-copy">By continuing you agree to our <a href="/terms">Terms</a> and <a href="/privacy">Privacy Policy</a>. Kindwell never sees or stores your social account password.</p>`;
   appRoot.innerHTML = `${header()}<main class="auth-wrap"><section class="auth-panel"><div>${brand()}</div>${body}</section></main>${footer()}`;
-  document.querySelector("#email-login")?.addEventListener("submit", event => submitAuth(event, "/api/auth/login", () => ({ email: document.querySelector("#login-email").value, password: document.querySelector("#login-password").value }), () => location.assign("/login"), "#login-message"));
+  document.querySelector("#email-login")?.addEventListener("submit", async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("button[type=submit]");
+    const notice = document.querySelector("#login-message");
+    const credentials = JSON.stringify({ email: document.querySelector("#login-email").value, password: document.querySelector("#login-password").value });
+    button.disabled = true; button.textContent = "Please wait…"; notice.textContent = "";
+    try { await request("/api/auth/login", { method: "POST", body: credentials }); location.assign("/login"); return; }
+    catch (issue) {
+      // Administrator credentials sign in through this same form.
+      try { await request("/api/admin/login", { method: "POST", body: credentials }); location.assign("/admin"); return; }
+      catch { notice.textContent = issue.message; }
+    }
+    button.disabled = false; button.textContent = "Log in";
+  });
   document.querySelector("#logout")?.addEventListener("click", async () => { await request("/api/auth/logout", { method: "POST" }); location.assign("/login"); });
   setupMenu();
 }
@@ -593,23 +616,33 @@ async function renderThankYou() {
   } catch { message.textContent = "We couldn't verify the payment just yet. Your gift will appear after our payment partner confirms it."; }
 }
 
+function renderContact() {
+  document.title = "Contact us | Kindwell";
+  appRoot.innerHTML = `${header()}<main class="auth-wrap"><section class="auth-panel contact-panel"><h1>Contact us</h1><p>Have a question or a complaint? Send it here and our team will read it.</p><form id="contact-form" class="admin-form"><label for="contact-name">Your name</label><input id="contact-name" maxlength="100" autocomplete="name" required><label for="contact-email">Email (optional, if you'd like a reply)</label><input id="contact-email" type="email" maxlength="254" autocomplete="email"><label for="contact-subject">Subject</label><select id="contact-subject"><option>Complaint</option><option>Question</option><option>Payment problem</option><option>Report a fundraiser</option><option>Other</option></select><label for="contact-message">Message</label><textarea id="contact-message" rows="6" minlength="5" maxlength="3000" required></textarea><button class="button" type="submit">Send message</button><p class="notice" id="contact-notice" role="status" aria-live="polite"></p></form></section></main>${footer()}`;
+  setupMenu();
+  document.querySelector("#contact-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("button[type=submit]");
+    const notice = document.querySelector("#contact-notice");
+    button.disabled = true; notice.textContent = "Sending…";
+    try {
+      await request("/api/contact", { method: "POST", body: JSON.stringify({ name: document.querySelector("#contact-name").value, email: document.querySelector("#contact-email").value, subject: document.querySelector("#contact-subject").value, message: document.querySelector("#contact-message").value }) });
+      form.reset(); notice.textContent = "Thank you. Your message has been sent.";
+    } catch (issue) { notice.textContent = issue.message; }
+    button.disabled = false;
+  });
+}
+
 async function renderAdmin() {
-  document.title = "Administrator | Kindwell";
-  appRoot.innerHTML = `${header()}<main class="auth-wrap"><section class="auth-panel"><div>${brand()}</div><h1>Administrator sign in</h1><p>Private access for the Kindwell administrator.</p><form id="admin-login" class="admin-form"><label for="admin-email">Email</label><input id="admin-email" type="email" autocomplete="username" required><label for="admin-password">Password</label><input id="admin-password" type="password" autocomplete="current-password" required><button class="button" type="submit">Sign in securely</button><p class="notice" id="admin-error" role="alert"></p></form></section></main>${footer()}`;
+  document.title = "Dashboard | Kindwell";
+  appRoot.innerHTML = `${header()}<main class="auth-wrap"><section class="auth-panel"><p class="notice" id="admin-error" role="alert">Loading…</p></section></main>${footer()}`;
   setupMenu();
   try { await request("/api/admin/fundraisers"); await renderDashboard(); return; }
   catch (issue) {
-    if (!issue.message.includes("(401)")) document.querySelector("#admin-error").textContent = issue.message;
+    if (issue.message.includes("(401)") || issue.message.includes("(403)")) { location.replace("/login"); return; }
+    document.querySelector("#admin-error").textContent = issue.message;
   }
-  document.querySelector("#admin-login").addEventListener("submit", async event => {
-    event.preventDefault();
-    const error = document.querySelector("#admin-error");
-    try {
-      await request("/api/admin/login", { method: "POST", body: JSON.stringify({ email: document.querySelector("#admin-email").value, password: document.querySelector("#admin-password").value }) });
-      await loadCsrf();
-      await renderDashboard();
-    } catch (issue) { error.textContent = issue.message; }
-  });
 }
 
 async function renderDashboard() {
@@ -725,6 +758,31 @@ async function renderDashboard() {
     document.querySelector("#reports-tab").hidden = button.dataset.tab !== "reports";
     document.querySelector("#comments-tab").hidden = button.dataset.tab !== "comments";
     if (button.dataset.tab === "comments" && !commentsLoaded) { commentsLoaded = true; void loadAdminComments(); }
+  }));
+  let messagesLoaded = false;
+  document.querySelector(".admin-tabs").insertAdjacentHTML("beforeend", `<button data-tab="messages">Messages</button>`);
+  document.querySelector("#comments-tab").insertAdjacentHTML("afterend", `<section id="messages-tab" hidden><div class="admin-panel"><h2>Contact messages</h2><p class="notice" id="admin-messages-notice" role="status" aria-live="polite"></p><div id="admin-messages-list"></div><div class="report-presets" id="admin-messages-pagination"></div></div></section>`);
+  const loadAdminMessages = async (page = 1) => {
+    const notice = document.querySelector("#admin-messages-notice");
+    notice.textContent = "Loading messages...";
+    try {
+      const result = await request(`/api/admin/messages?page=${page}`);
+      document.querySelector("#admin-messages-list").innerHTML = result.items.map(item => `<article class="comment"><strong>${esc(item.subject || "Message")}</strong><br><small>${esc(item.name)}${item.email ? ` · <a href="mailto:${esc(item.email)}">${esc(item.email)}</a>` : " · no email"} · ${esc(new Date(item.createdAt).toLocaleString())}</small><p style="white-space:pre-wrap">${esc(item.message)}</p><button type="button" data-delete-message="${item.id}">Delete message</button></article>`).join("") || `<p class="donor-count">No messages yet.</p>`;
+      document.querySelectorAll("[data-delete-message]").forEach(button => button.addEventListener("click", async () => {
+        if (!confirm("Delete this message?")) return;
+        button.disabled = true;
+        try { await request(`/api/admin/messages/${button.dataset.deleteMessage}`, { method: "DELETE" }); await loadAdminMessages(page); }
+        catch (issue) { notice.textContent = issue.message; button.disabled = false; }
+      }));
+      const pagination = document.querySelector("#admin-messages-pagination");
+      pagination.innerHTML = `<button type="button" data-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>Previous</button><span>Page ${page}</span><button type="button" data-page="${page + 1}" ${result.hasMore ? "" : "disabled"}>Next</button>`;
+      pagination.querySelectorAll("button").forEach(button => button.addEventListener("click", () => void loadAdminMessages(Number(button.dataset.page))));
+      notice.textContent = "";
+    } catch (issue) { messagesLoaded = false; notice.textContent = `Unable to load messages: ${issue.message}`; }
+  };
+  document.querySelectorAll(".admin-tabs button").forEach(button => button.addEventListener("click", () => {
+    document.querySelector("#messages-tab").hidden = button.dataset.tab !== "messages";
+    if (button.dataset.tab === "messages" && !messagesLoaded) { messagesLoaded = true; void loadAdminMessages(); }
   }));
   let reportData = null;
   let ledgerPage = 1;
@@ -973,6 +1031,7 @@ async function start() {
   if (pathname === "/admin" || pathname === "/admin/") return renderAdmin();
   if (pathname === "/thank-you") return renderThankYou();
   if (pathname === "/privacy") return renderInfoPage("privacy");
+  if (pathname === "/contact" || pathname === "/contact/") return renderContact();
   if (pathname === "/terms") return renderInfoPage("terms");
   if (pathname.startsWith("/fundraisers/")) return renderDetail(pathname.slice("/fundraisers/".length));
   if (pathname.startsWith("/people/")) return renderPerson(pathname.slice("/people/".length));
