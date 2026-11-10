@@ -10,7 +10,7 @@ async function request(url, options = {}) {
   const headers = new Headers(options.headers || {});
   if (options.method && options.method !== "GET" && csrfToken) headers.set("X-CSRF-TOKEN", csrfToken);
   if (options.body && !(options.body instanceof FormData)) headers.set("Content-Type", "application/json");
-  const response = await fetch(url, { ...options, headers });
+  const response = await fetch(url, { ...options, headers, signal: AbortSignal.timeout(60000) }).catch(() => { throw new Error("The server took too long to respond. Please try again."); });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || payload.detail || `Request failed (${response.status})`);
   return payload;
@@ -466,12 +466,10 @@ async function renderPublicLogin() {
     const notice = document.querySelector("#login-message");
     const credentials = JSON.stringify({ email: document.querySelector("#login-email").value, password: document.querySelector("#login-password").value });
     button.disabled = true; button.textContent = "Please wait…"; notice.textContent = "";
-    try { await request("/api/auth/login", { method: "POST", body: credentials }); location.assign("/login"); return; }
-    catch (issue) {
-      // Administrator credentials sign in through this same form.
-      try { await request("/api/admin/login", { method: "POST", body: credentials }); location.assign("/admin"); return; }
-      catch { notice.textContent = issue.message; }
-    }
+    try {
+      const result = await request("/api/auth/login", { method: "POST", body: credentials });
+      location.assign(result.admin ? "/admin" : "/login"); return;
+    } catch (issue) { notice.textContent = issue.message; }
     button.disabled = false; button.textContent = "Log in";
   });
   document.querySelector("#logout")?.addEventListener("click", async () => { await request("/api/auth/logout", { method: "POST" }); location.assign("/login"); });

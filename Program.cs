@@ -589,6 +589,14 @@ app.MapPost("/api/auth/login", async (HttpContext context, IAntiforgery antiforg
     if (!await IsValidRequestToken(context, antiforgery)) return Results.BadRequest(new { error = "Please refresh and try again." });
     var body = await ReadJson(context);
     var email = Field(body, "email").Trim().ToLowerInvariant(); var password = Field(body, "password");
+    var adminEmail = builder.Configuration["ADMIN_EMAIL"]; var adminPassword = builder.Configuration["ADMIN_PASSWORD"];
+    if (!string.IsNullOrWhiteSpace(adminEmail) && !string.IsNullOrWhiteSpace(adminPassword) && password.Length <= 128
+        && SecureEquals(email, adminEmail.Trim().ToLowerInvariant()) && SecureEquals(password, adminPassword))
+    {
+        var adminIdentity = new ClaimsIdentity(new[] { new Claim(ClaimTypes.Name, adminEmail), new Claim(ClaimTypes.Role, "Administrator") }, CookieAuthenticationDefaults.AuthenticationScheme);
+        await context.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(adminIdentity));
+        return Results.Ok(new { ok = true, admin = true });
+    }
     long id = 0; string? name = null, hash = null;
     if (password.Length <= 128)
     {
