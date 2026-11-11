@@ -10,7 +10,17 @@ async function request(url, options = {}) {
   const headers = new Headers(options.headers || {});
   if (options.method && options.method !== "GET" && csrfToken) headers.set("X-CSRF-TOKEN", csrfToken);
   if (options.body && !(options.body instanceof FormData)) headers.set("Content-Type", "application/json");
-  const response = await fetch(url, { ...options, headers, signal: AbortSignal.timeout(60000) }).catch(() => { throw new Error("The server took too long to respond. Please try again."); });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60000);
+  let response;
+  try {
+    response = await fetch(url, { ...options, headers, signal: controller.signal });
+  } catch (issue) {
+    if (controller.signal.aborted) throw new Error("The server took too long to respond. Please try again.");
+    throw new Error("Could not connect to the server. Please check your connection and try again.", { cause: issue });
+  } finally {
+    clearTimeout(timeout);
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || payload.detail || `Request failed (${response.status})`);
   return payload;
