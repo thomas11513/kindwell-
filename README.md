@@ -1,5 +1,7 @@
 # Kindwell
 
+The live payment demo displays fictional gifts, not real payments, and does not change actual fundraiser totals. The separate simulation snapshot API retains starting balances and goals without modifying donations or the ledger; those balances are not displayed on the demo page.
+
 Kindwell is a single-administrator community fundraising site built with ASP.NET Core 8, SQLite, and Paylio hosted checkout.
 
 ## Run locally

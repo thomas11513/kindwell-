@@ -123,6 +123,32 @@ app.MapGet("/api/fundraisers", async () =>
     return Results.Ok(campaigns);
 });
 
+app.MapGet("/api/payment-demo", async () =>
+{
+    await using var db = await OpenDatabase();
+    var now = DateTimeOffset.UtcNow;
+    await using (var snapshot = db.CreateCommand())
+    {
+        snapshot.CommandText = """
+            INSERT OR IGNORE INTO payment_demo_snapshots(fundraiser_id,starting_amount,goal,started_at)
+            SELECT id,raised+reported_raised,goal,$started FROM fundraisers WHERE published=1;
+            """;
+        snapshot.Parameters.AddWithValue("$started", now.ToString("O"));
+        await snapshot.ExecuteNonQueryAsync();
+    }
+    await using var query = db.CreateCommand();
+    query.CommandText = """
+        SELECT f.slug,f.title,s.starting_amount,s.goal,s.started_at
+        FROM payment_demo_snapshots s JOIN fundraisers f ON f.id=s.fundraiser_id
+        WHERE f.published=1 ORDER BY f.featured DESC,f.created_at DESC;
+        """;
+    await using var reader = await query.ExecuteReaderAsync();
+    var items = new List<object>();
+    while (await reader.ReadAsync())
+        items.Add(new { slug = reader.GetString(0), title = reader.GetString(1), startingAmount = reader.GetInt64(2), goal = reader.GetInt64(3), startedAt = reader.GetString(4) });
+    return Results.Ok(new { serverTime = now.ToString("O"), items });
+});
+
 app.MapGet("/api/fundraisers/search", async (string? q, string? category, string? sort, int page = 1, int pageSize = 12) =>
 {
     var search = q?.Trim() ?? "";
@@ -1466,6 +1492,7 @@ async Task InitializeDatabase()
         PRAGMA foreign_keys=ON;
         CREATE TABLE IF NOT EXISTS schema_migrations(migration_id TEXT PRIMARY KEY,applied_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS fundraisers(id INTEGER PRIMARY KEY AUTOINCREMENT,slug TEXT NOT NULL UNIQUE,title TEXT NOT NULL,summary TEXT NOT NULL,story TEXT NOT NULL,image_url TEXT NOT NULL,goal INTEGER NOT NULL,raised INTEGER NOT NULL DEFAULT 0,donation_count INTEGER NOT NULL DEFAULT 0,reported_raised INTEGER NOT NULL DEFAULT 0,reported_donation_count INTEGER NOT NULL DEFAULT 0,published INTEGER NOT NULL DEFAULT 0,featured INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,category TEXT NOT NULL DEFAULT 'Community',organizer_name TEXT NOT NULL DEFAULT '',organizer_location TEXT NOT NULL DEFAULT '',organizer_profile_image TEXT NOT NULL DEFAULT '',organizer_bio TEXT NOT NULL DEFAULT '');
+        CREATE TABLE IF NOT EXISTS payment_demo_snapshots(fundraiser_id INTEGER PRIMARY KEY REFERENCES fundraisers(id) ON DELETE CASCADE,starting_amount INTEGER NOT NULL,goal INTEGER NOT NULL,started_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT NOT NULL UNIQUE,name TEXT NOT NULL,password_hash TEXT NOT NULL,created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS password_resets(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,token_hash TEXT NOT NULL UNIQUE,expires_at TEXT NOT NULL,used INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS start_requests(id INTEGER PRIMARY KEY AUTOINCREMENT,category TEXT NOT NULL,beneficiary TEXT NOT NULL,reason TEXT NOT NULL,goal_usd INTEGER NOT NULL,timeline TEXT NOT NULL,name TEXT NOT NULL,email TEXT NOT NULL,created_at TEXT NOT NULL);

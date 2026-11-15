@@ -35,7 +35,7 @@ function brand() {
 }
 
 function header() {
-  return `<header class="site-header"><div class="header-inner">${brand()}<nav class="main-nav" id="main-nav" aria-label="Main navigation"><a href="/#home">Home</a><a href="/fundraisers">View ongoing fundraisers</a><a href="/people">People</a><a href="/#how-it-works">How it works</a><a href="/#about">About us</a><a href="/contact">Contact</a></nav><div class="header-actions"><a class="login-link" href="/login">Log in</a><a class="button button-small" href="/#fundraisers">Find a cause</a><button class="mobile-menu" aria-label="Toggle navigation" aria-expanded="false" aria-controls="main-nav"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div></div></header>`;
+  return `<header class="site-header"><div class="header-inner">${brand()}<nav class="main-nav" id="main-nav" aria-label="Main navigation"><a href="/#home">Home</a><a href="/fundraisers">View ongoing fundraisers</a><a href="/people">People</a><a href="/#how-it-works">How it works</a><a href="/#about">About us</a><a href="/contact">Contact</a></nav><div class="header-actions"><a class="live-demo-link" href="/payment-demo"><span class="live-demo-dot" aria-hidden="true"></span>Live </a><a class="login-link" href="/login">Log in</a><a class="button button-small" href="/#fundraisers">Find a cause</a><button class="mobile-menu" aria-label="Toggle navigation" aria-expanded="false" aria-controls="main-nav"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div></div></header>`;
 }
 
 function footer() {
@@ -43,6 +43,112 @@ function footer() {
 }
 
 function progress(campaign) { return Math.min(100, Math.round(campaign.raised / campaign.goal * 100)); }
+
+function simulatedBalance(item, now) {
+  const { startingAmount, goal } = item;
+  if (goal <= 0 || startingAmount >= goal) return startingAmount;
+  const increment = goal > 1000000 ? 500 : 200;
+  const stepsToGoal = Math.ceil((goal - startingAmount) / increment);
+  const elapsedSteps = Math.max(0, Math.floor((now - Date.parse(item.startedAt)) / (5 * 60 * 60 * 1000)));
+  const step = elapsedSteps % (stepsToGoal + 1);
+  return Math.min(goal, startingAmount + step * increment);
+}
+
+function demoElapsedTime(milliseconds) {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  return `${Math.floor(seconds / 3600)}h ago`;
+}
+
+function createDemoExampleGenerator(random = Math.random) {
+  const firstNames = ["Alex", "Jordan", "Taylor", "Sam", "Morgan", "Casey", "Avery", "Riley", "Jamie", "Cameron", "Olivia", "Emma", "Noah", "Liam", "Maya", "Ethan", "Grace", "Mason", "Chloe", "Lucas", "Sophia", "Elijah", "Amelia", "Benjamin", "Zoe", "Daniel", "Nora", "Isaac", "Lily", "Caleb"];
+  const lastNames = ["Johnson", "Miller", "Davis", "Wilson", "Brown", "Parker", "Walker", "Carter", "Brooks", "Reed", "Adams", "Bennett", "Coleman", "Cooper", "Diaz", "Foster", "Garcia", "Harris", "Jackson", "Lewis", "Martin", "Mitchell", "Nguyen", "Robinson", "Scott", "Taylor", "Thomas", "Turner", "White", "Young"];
+  const names = firstNames.flatMap(first => lastNames.map(last => `${first} ${last}`));
+  const recentNames = [];
+  let previousAmount = 0;
+  return () => {
+    const available = names.filter(name => !recentNames.includes(name));
+    const name = available[Math.floor(random() * available.length)];
+    recentNames.push(name);
+    if (recentNames.length > 100) recentNames.shift();
+    let amount = 5 + Math.floor(random() * 9996);
+    if (amount === previousAmount) amount = amount === 10000 ? 5 : amount + 1;
+    previousAmount = amount;
+    return { name, amount };
+  };
+}
+
+async function renderPaymentDemo() {
+  document.title = "Payment  | Kindwell";
+  appRoot.innerHTML = `${header()}<main class="page-wrap page-shell payment-demo"><span class="demo-label"><span class="live-demo-dot" aria-hidden="true"></span>Live</span><h1>Payment activity </h1><section class="demo-panel" aria-label="Fictional payment activity"><div id="demo-feed" aria-live="polite"></div></section></main>${footer()}`;
+  setupMenu();
+  const feed = document.querySelector("#demo-feed");
+  const nextExample = createDemoExampleGenerator();
+  const addExample = () => {
+    const { name, amount } = nextExample();
+    const createdAt = performance.now();
+    feed.insertAdjacentHTML("afterbegin", `<article class="demo-event" data-created-at="${createdAt}"><span><strong>${esc(name)}</strong> donated <strong>${money(amount * 100)}</strong><small>Fictional example</small></span><span class="demo-event-time" aria-live="off">0s ago</span></article>`);
+    while (feed.children.length > 6) feed.lastElementChild.remove();
+  };
+  for (let i = 0; i < 4; i++) addExample();
+  setInterval(addExample, 12000);
+  setInterval(() => {
+    const now = performance.now();
+    feed.querySelectorAll(".demo-event").forEach(event => {
+      event.querySelector(".demo-event-time").textContent = demoElapsedTime(now - Number(event.dataset.createdAt));
+    });
+  }, 1000);
+}
+
+function fundraiserUrl(campaign) {
+  return new URL(`/fundraisers/${encodeURIComponent(campaign.slug)}`, location.origin).href;
+}
+
+async function copyFundraiserLink(url, notice) {
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+    await navigator.clipboard.writeText(url);
+    notice.textContent = "Link copied.";
+  } catch {
+    notice.textContent = "Couldn't copy the link. Please select and copy it manually.";
+  }
+}
+
+function openShareDialog(campaign, trigger) {
+  const root = document.querySelector("#modal-root");
+  const url = fundraiserUrl(campaign);
+  const pct = progress(campaign);
+  const previousOverflow = document.body.style.overflow;
+  document.body.style.overflow = "hidden";
+  root.innerHTML = `<div class="modal-backdrop share-backdrop" role="presentation"><section class="share-dialog" role="dialog" aria-modal="true" aria-labelledby="share-dialog-title"><button type="button" class="modal-close" aria-label="Close share window">×</button><h2 id="share-dialog-title">Share this fundraiser</h2><p>Help more people discover this fundraiser.</p><div class="share-preview"><div class="share-preview-image"><img src="${esc(campaign.image)}" alt=""></div><div class="share-preview-body"><img class="share-preview-logo" src="/kindwell-logo.png" alt="Kindwell"><div class="share-preview-raised">${esc(money(campaign.raised))} raised</div><div class="share-preview-ring" style="--pct:${pct}" aria-label="${pct} percent funded"><span>${pct}%</span></div><h3>${esc(campaign.title)}</h3><span class="share-preview-donate">Donate now!</span><div class="share-preview-url">${esc(url)}</div></div></div><label for="share-link">Fundraiser link</label><div class="share-link-row"><input id="share-link" type="text" readonly value="${esc(url)}"><button type="button" class="button" id="share-copy">Copy link</button></div><p class="share-status" role="status" aria-live="polite"></p>${navigator.share ? `<button type="button" class="button button-light share-native">Share fundraiser</button>` : ""}</section></div>`;
+  const dialog = root.querySelector(".share-dialog");
+  const notice = root.querySelector(".share-status");
+  const close = () => {
+    document.removeEventListener("keydown", handleKey);
+    document.body.style.overflow = previousOverflow;
+    root.innerHTML = "";
+    if (trigger.isConnected) trigger.focus();
+  };
+  const handleKey = event => {
+    if (event.key === "Escape") { event.preventDefault(); close(); return; }
+    if (event.key !== "Tab") return;
+    const focusable = [...dialog.querySelectorAll("button:not(:disabled), input:not(:disabled)")];
+    if (!dialog.contains(document.activeElement)) { event.preventDefault(); (event.shiftKey ? focusable[focusable.length - 1] : focusable[0]).focus(); }
+    else if (event.shiftKey && document.activeElement === focusable[0]) { event.preventDefault(); focusable[focusable.length - 1].focus(); }
+    else if (!event.shiftKey && document.activeElement === focusable[focusable.length - 1]) { event.preventDefault(); focusable[0].focus(); }
+  };
+  document.addEventListener("keydown", handleKey);
+  root.querySelector(".modal-close").addEventListener("click", close);
+  root.querySelector(".modal-backdrop").addEventListener("click", event => { if (event.target === event.currentTarget) close(); });
+  root.querySelector("#share-link").addEventListener("click", event => event.currentTarget.select());
+  root.querySelector("#share-copy").addEventListener("click", () => copyFundraiserLink(url, notice));
+  root.querySelector(".share-native")?.addEventListener("click", async () => {
+    try { await navigator.share({ title: campaign.title, url }); }
+    catch (issue) { if (issue.name !== "AbortError") notice.textContent = "Couldn't open sharing. Please copy the link instead."; }
+  });
+  root.querySelector(".modal-close").focus();
+}
 
 function slugify(value) {
   return String(value ?? "").trim().toLowerCase().normalize("NFKD").replace(/[^\w\s-]/g, "").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
@@ -185,6 +291,19 @@ async function renderHome() {
   try { campaigns = await request("/api/fundraisers"); } catch { campaigns = []; }
   document.title = "Kindwell — Good things grow together";
   appRoot.innerHTML = `${header()}<main id="home"><section class="hero"><div class="hero-inner"><div class="hero-copy"><span class="eyebrow">Good things grow together</span><h1>Together, We Can Make a Difference.</h1><p>When a neighbor needs a hand, a community can change everything. Find a cause close to your heart and help move it forward.</p><form class="search-form" id="search-form" role="search"><svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 5 5"/></svg><label class="sr-only" for="campaign-search">Search fundraisers</label><input id="campaign-search" name="q" placeholder="Try “community garden”" autocomplete="off"><button class="button" type="submit">Search</button></form><div class="hero-chips" aria-label="Browse by category"><span>Popular:</span>${["Medical", "Emergency", "Education", "Environment", "Community"].map(c => `<a href="/fundraisers?category=${encodeURIComponent(c)}">${c}</a>`).join("")}</div><div class="hero-actions"><a class="button" href="/fundraisers">Browse fundraisers</a><a class="button button-ghost" href="/#how-it-works">How it works</a></div><div class="hero-note">Every contribution is handled securely by Paymentwings.</div></div><div class="hero-photo"><img src="https://images.unsplash.com/photo-1531206715517-5c0ba140b2b8?auto=format&fit=crop&w=1200&q=85" alt="Neighbors gather around a shared community project" fetchpriority="high"><div class="photo-caption"><span class="caption-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 21s-8-4.5-8-11a4.5 4.5 0 0 1 8-2.8A4.5 4.5 0 0 1 20 10c0 6.5-8 11-8 11Z"/><path d="M12 7v8m-3-3h6"/></svg></span><span class="caption-text">A little help goes a long way<small>Real people. Local impact. Shared hope.</small></span></div></div></div></section><section class="proof-strip" aria-label="Kindwell impact"><div class="proof-inner"><div class="proof-item"><strong>${campaigns.length}</strong><span>active fundraisers</span></div></div></section><section class="section" id="fundraisers"><div class="page-wrap"><div class="section-heading"><div><span class="eyebrow">Causes to care about</span><h2>Stories moving forward</h2></div><p>Meet the people and projects making good things happen, one thoughtful gift at a time.</p><a class="button view-more-btn" href="/fundraisers">View more <span aria-hidden="true">→</span></a></div><div class="campaign-grid" id="campaign-grid">${campaigns.slice(0, 6).map(card).join("") || `<div class="empty-state">Fundraisers are having trouble loading. Please refresh to try again.</div>`}</div><div class="start-cta"><h3>Have a cause of your own?</h3><p>Tell us your story and we'll help you get started.</p><a class="button" href="/start/1">Start Kindwell fundraiser</a></div></div></section><section class="section categories-section"><div class="page-wrap"><div class="section-heading"><div><span class="eyebrow">Browse by category</span><h2>Find a cause that moves you</h2></div><a class="button view-more-btn" href="/categories">View more <span aria-hidden="true">→</span></a></div><div class="category-grid">${[["Medical","Help with care, recovery and treatment","M12 21s-8-4.5-8-11a4.5 4.5 0 0 1 8-2.8A4.5 4.5 0 0 1 20 10c0 6.5-8 11-8 11Z"],["Emergency","Support neighbors in urgent need","M12 3 2 21h20L12 3Zm0 6v5m0 3v.5"],["Education","Open doors to learning","M3 9l9-5 9 5-9 5-9-5Zm4 3v5c0 0 2.5 2 5 2s5-1 5-2v-5"],["Environment","Protect and restore our shared places","M5 19c0-8 5-13 14-14 0 9-5 14-13 14m0 0c1-4 4-7 8-9"],["Community","Strengthen the places we live","M3 11l9-7 9 7v9H3v-9Zm6 9v-6h6v6"]].map(([n,d,p]) => `<a class="category-tile" href="/fundraisers?category=${n}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="${p}"/></svg><h3>${n}</h3><p>${d}</p></a>`).join("")}</div></div></section><section class="how-section" id="how-it-works"><div class="page-wrap"><div class="how-heading"><span class="eyebrow">Simple by design</span><h2>Giving should feel good.</h2><p>A few easy steps can help a good thing go a little further.</p></div><div class="steps"><article class="step"><span class="step-number">01</span><h3>Find your reason</h3><p>Explore community-led fundraisers and choose a story that matters to you.</p></article><article class="step"><span class="step-number">02</span><h3>Give with confidence</h3><p>Choose an amount and complete your gift through Paymentwings's secure checkout.</p></article><article class="step"><span class="step-number">03</span><h3>Be part of the good</h3><p>Confirmed gifts are recorded transparently and shared with the campaign community.</p></article></div></div></section><section class="section trust-section"><div class="page-wrap"><div class="section-heading"><div><span class="eyebrow">Giving with confidence</span><h2>Built on transparency</h2></div><p>Plain answers about how your gift is handled.</p></div><div class="trust-grid"><article><h3>Secure payments</h3><p>Card details are entered on Paymentwings's hosted checkout and never touch our servers.</p></article><article><h3>Honest totals</h3><p>Only confirmed payments count. Amounts reported from before Kindwell are labeled separately.</p></article><article><h3>Campaign updates</h3><p>Organizers post updates so you can see how a story moves forward.</p></article></div><div class="faq"><details><summary>Is my donation secure?</summary><p>Yes. Payments are processed by Paymentwings over an encrypted connection.</p></details><details><summary>When does a gift appear on a campaign?</summary><p>After Paymentwings confirms the payment, usually within moments.</p></details><details><summary>Who can I contact for help?</summary><p>Email <a href="mailto:hello@kindwell.care">hello@kindwell.care</a>.</p></details></div></div></section><section class="section why-section"><div class="page-wrap"><div class="section-heading"><div><span class="eyebrow">Why Kindwell</span><h2>Giving made simple and safe</h2></div></div><div class="why-grid"><article><h3>Start a fundraiser</h3><p>Have a cause that needs support? <a href="mailto:hello@kindwell.care?subject=Start%20a%20fundraiser">Tell us your story</a> and our team will help you get started.</p></article><article><h3>Share with your people</h3><p>Every fundraiser has its own page you can share by link, message or social media.</p></article><article><h3>Transparent records</h3><p>Every confirmed gift is recorded in a permanent ledger and reported openly.</p></article><article><h3>Friendly support</h3><p>Questions about a gift or a campaign? Our team is a message away at hello@kindwell.care.</p></article></div></div></section><section class="closing-band" id="about"><div class="closing-inner"><div><h2>Care is something we do together.</h2><p>Kindwell brings thoughtful people closer to causes that matter.</p></div><a class="button" href="/#fundraisers">Explore fundraisers <span aria-hidden="true">→</span></a></div></section></main>${footer()}`;
+  document.querySelector("#home").insertAdjacentHTML("beforeend", `<section class="community-video-section" aria-labelledby="community-video-title"><div class="page-wrap community-video-inner"><div class="community-video-copy"><span class="eyebrow">Good things grow together</span><h2 id="community-video-title">A little help goes a long way.</h2><p>See how small acts of kindness bring people together.</p><p class="community-video-note">The video plays muted. Use the controls to turn on sound.</p></div><video class="community-video" controls controlslist="nodownload" loop muted playsinline preload="metadata" aria-label="Kindwell community video"><source src="/kindwell-community.mp4" type="video/mp4">Your browser does not support video playback.</video></div></section>`);
+  const communityVideo = document.querySelector(".community-video");
+  if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    const playVideo = () => communityVideo.play().catch(error => console.warn("Video autoplay was unavailable:", error));
+    if ("IntersectionObserver" in window) {
+      const observer = new IntersectionObserver(entries => {
+        if (entries.some(entry => entry.isIntersecting)) { observer.disconnect(); playVideo(); }
+      }, { threshold: 0.25 });
+      observer.observe(communityVideo);
+    } else {
+      communityVideo.autoplay = true;
+    }
+  }
   const proofItems = document.querySelectorAll(".proof-item");
   document.querySelectorAll(".hero-note, .steps .step:nth-child(2) p, .trust-grid article:first-child p, .faq details p").forEach(element => {
     element.textContent = element.textContent.replaceAll("Paymentwings", "Paylio");
@@ -244,14 +363,21 @@ async function renderDetail(slug) {
   main.insertAdjacentHTML("afterbegin", `<div class="ring-row">${ring}<div><strong>${money(campaign.raised)} raised</strong> of ${money(campaign.goal)}<small>${Number(campaign.donations + (campaign.reportedDonations || 0)).toLocaleString()} donations</small></div></div>`);
   document.querySelector(".site-footer").insertAdjacentHTML("beforebegin", `<div class="donate-bar">${ring}<div class="donate-bar-text"><strong>${money(campaign.raised)} raised</strong> of ${money(campaign.goal)}${latest ? `<small>${esc(latest.name)} donated ${money(latest.amount)}</small>` : ""}</div><div class="donate-bar-actions"><button class="pill pill-donate" id="bar-donate" type="button">Donate</button><button class="pill pill-share" id="bar-share" type="button">Share</button></div></div>`);
   document.querySelector("#bar-donate").addEventListener("click", () => openDonation(campaign));
-  document.querySelector("#bar-share").addEventListener("click", () => document.querySelector("#share-button").click());
+  document.querySelector("#bar-share").addEventListener("click", event => openShareDialog(campaign, event.currentTarget));
   main.insertAdjacentHTML("beforeend", updatesMarkup);
   setupComments(campaign.slug);
-  document.querySelector("#share-button").addEventListener("click", async () => {
-    if (navigator.share) await navigator.share({ title: campaign.title, url: location.href });
-    else await navigator.clipboard.writeText(location.href);
+  document.querySelector("#share-button").addEventListener("click", event => openShareDialog(campaign, event.currentTarget));
+  document.querySelector("#copy-button").addEventListener("click", async event => {
+    const button = event.currentTarget;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(fundraiserUrl(campaign));
+      button.textContent = "Link copied";
+    } catch {
+      openShareDialog(campaign, button);
+      document.querySelector(".share-status").textContent = "Couldn't copy the link. Please select and copy it manually.";
+    }
   });
-  document.querySelector("#copy-button").addEventListener("click", async event => { await navigator.clipboard.writeText(location.href); event.currentTarget.textContent = "Link copied"; });
 }
 
 function setupComments(slug) {
@@ -288,8 +414,7 @@ function setupComments(slug) {
 function openDonation(campaign) {
   const root = document.querySelector("#modal-root");
   document.body.style.overflow = "hidden";
-  root.innerHTML = `<div class="modal-backdrop" role="presentation"><section class="auth-wrap" role="dialog" aria-modal="true" aria-labelledby="donate-title"><div class="auth-panel"><button type="button" class="modal-close" aria-label="Close donation window">×</button><h1 id="donate-title">Donate</h1><p>Your gift will support “${esc(campaign.title)}”.</p><form id="donation-form"><label for="donor-currency">Currency</label><select id="donor-currency"><option value="USD">USD</option></select><div class="payment-options" id="amount-options"></div><label class="sr-only" for="custom-amount">Custom gift amount</label><div class="donate-custom"><span id="currency-symbol">$</span><input id="custom-amount" type="number" min="1" max="100000000" step="0.01" placeholder="Enter another amount" inputmode="decimal"></div><p class="secure-copy" id="usd-estimate" aria-live="polite"></p><label for="donor-name">Name (optional)</label><input id="donor-name" maxlength="80" placeholder="Your name"><label for="donor-email">Email (for your payment receipt)</label><input id="donor-email" type="email" maxlength="254" required autocomplete="email" placeholder="you@example.com">  <div class="form-checks"><label><input id="anonymous" type="checkbox"> Give anonymously</label></div><div class="card-payment-choice"><span aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/></svg></span><span><strong>Card</strong><small>You'll continue to Paymentwings' secure hosted checkout. Kindwell never asks for or receives your card number, expiry, CVV, PIN, or one-time code.</small></span></div><button class="button" type="submit">Continue to secure card checkout</button><p class="notice" id="donate-error" role="alert"></p></form></div></section></div>`;
-  root.querySelector(".card-payment-choice small").textContent = "Continue to Paylio's hosted checkout. Paylio may offer a choice of providers. Kindwell never asks for or receives your card number, expiry, CVV, PIN, or one-time code.";
+  root.innerHTML = `<div class="modal-backdrop" role="presentation"><section class="auth-wrap" role="dialog" aria-modal="true" aria-labelledby="donate-title"><div class="auth-panel"><button type="button" class="modal-close" aria-label="Close donation window">×</button><h1 id="donate-title">Donate</h1><p>Your gift will support “${esc(campaign.title)}”.</p><form id="donation-form"><label for="donor-currency">Currency</label><select id="donor-currency"><option value="USD">USD</option></select><div class="payment-options" id="amount-options"></div><label class="sr-only" for="custom-amount">Custom gift amount</label><div class="donate-custom"><span id="currency-symbol">$</span><input id="custom-amount" type="number" min="1" max="100000000" step="0.01" placeholder="Enter another amount" inputmode="decimal"></div><p class="secure-copy" id="usd-estimate" aria-live="polite"></p><label for="donor-name">Name (optional)</label><input id="donor-name" maxlength="80" placeholder="Your name"><label for="donor-email">Email (for your payment receipt)</label><input id="donor-email" type="email" maxlength="254" required autocomplete="email" placeholder="you@example.com">  <div class="form-checks"><label><input id="anonymous" type="checkbox"> Give anonymously</label></div><div class="card-payment-choice"><span aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/></svg></span><span><strong>Card</strong></span></div><button class="button" type="submit">Continue to secure card checkout</button><p class="notice" id="donate-error" role="alert"></p></form></div></section></div>`;
   root.querySelector("#custom-amount").max = "10000";
   root.querySelector("#donation-form > button[type=submit]").textContent = "Donate securely";
   let closed = false;
@@ -1031,6 +1156,7 @@ async function start() {
   if (pathname.startsWith("/start/")) return renderStart(pathname.slice("/start/".length).replace(/\/$/, ""));
   if (pathname === "/login") return renderPublicLogin();
   if (pathname === "/signup") return renderSignup();
+  if (pathname === "/payment-demo" || pathname === "/payment-demo/") return renderPaymentDemo();
   if (pathname === "/forgot-password") return renderForgotPassword();
   if (pathname === "/reset-password") return renderResetPassword();
   if (pathname === "/fundraisers" || pathname === "/fundraisers/") return renderOngoing();
