@@ -2,7 +2,7 @@
 const money = cents => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(cents / 100);
 const formatCurrency = (minor, code) => new Intl.NumberFormat(undefined, { style: "currency", currency: code, minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(minor / 100);
 const DONATION_PRESETS = { USD: [25, 50, 100, 250], NGN: [10000, 25000, 50000, 100000], GBP: [20, 40, 80, 200], EUR: [20, 50, 100, 200] };
-const PAYMENT_ACTIVITY_LIMIT = 30;
+const PAYMENT_ACTIVITY_LIMIT = 500;
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 let csrfToken = "";
 let campaigns = [];
@@ -36,7 +36,7 @@ function brand() {
 }
 
 function header() {
-  return `<header class="site-header"><div class="header-inner">${brand()}<nav class="main-nav" id="main-nav" aria-label="Main navigation"><a href="/#home">Home</a><a href="/fundraisers">View ongoing fundraisers</a><a href="/people">People</a><a href="/#how-it-works">How it works</a><a href="/#about">About us</a><a href="/contact">Contact</a></nav><div class="header-actions"><a class="live-demo-link" href="/payment-demo"><span class="live-demo-dot" aria-hidden="true"></span>Live Payment</a><a class="login-link" href="/login">Log in</a><a class="button button-small" href="/#fundraisers">Find a cause</a><button class="mobile-menu" aria-label="Toggle navigation" aria-expanded="false" aria-controls="main-nav"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div></div></header>`;
+  return `<header class="site-header"><div class="header-inner">${brand()}<nav class="main-nav" id="main-nav" aria-label="Main navigation"><a href="/#home">Home</a><a href="/fundraisers">View ongoing fundraisers</a><a href="/people">People</a><a href="/#how-it-works">How it works</a><a href="/#about">About us</a><a href="/contact">Contact</a></nav><div class="header-actions"><a class="live-demo-link" href="/payment-demo"><span class="live-demo-dot" aria-hidden="true"></span>Payment simulation</a><a class="login-link" href="/login">Log in</a><a class="button button-small" href="/#fundraisers">Find a cause</a><button class="mobile-menu" aria-label="Toggle navigation" aria-expanded="false" aria-controls="main-nav"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div></div></header>`;
 }
 
 function footer() {
@@ -81,15 +81,15 @@ function createDemoExampleGenerator(random = Math.random) {
 }
 
 async function renderPaymentDemo() {
-  document.title = "Payment  | Kindwell";
-  appRoot.innerHTML = `${header()}<main class="page-wrap page-shell payment-demo"><span class="demo-label"><span class="live-demo-dot" aria-hidden="true"></span>Live payment</span><h1>Payment activity</h1><section class="demo-panel" aria-label="Fictional payment activity"><div id="demo-feed" aria-live="polite"></div></section></main>${footer()}`;
+  document.title = "Payment activity simulation | Kindwell";
+  appRoot.innerHTML = `${header()}<main class="page-wrap page-shell payment-demo"><span class="demo-label"><span class="live-demo-dot" aria-hidden="true"></span>SIMULATION ONLY</span><h1>Payment activity</h1><section class="demo-panel" aria-label="Fictional payment activity"><div id="demo-feed" aria-live="polite"></div></section></main>${footer()}`;
   setupMenu();
   const feed = document.querySelector("#demo-feed");
   const nextExample = createDemoExampleGenerator();
   const addExample = (ageMilliseconds = 0) => {
     const { name, amount } = nextExample();
     const createdAt = performance.now() - ageMilliseconds;
-    feed.insertAdjacentHTML("afterbegin", `<article class="demo-event" data-created-at="${createdAt}"><span><strong>${esc(name)}</strong> donated <strong>${money(amount * 100)}</strong><small> Donation  confirmed </small></span><span class="demo-event-time" aria-live="off">${demoElapsedTime(ageMilliseconds)}</span></article>`);
+    feed.insertAdjacentHTML("afterbegin", `<article class="demo-event" data-created-at="${createdAt}"><span><strong>${esc(name)}</strong> donated <strong>${money(amount * 100)}</strong><small>Fictional example</small></span><span class="demo-event-time" aria-live="off">${demoElapsedTime(ageMilliseconds)}</span></article>`);
     while (feed.children.length > PAYMENT_ACTIVITY_LIMIT) feed.lastElementChild.remove();
   };
   for (let i = PAYMENT_ACTIVITY_LIMIT - 1; i >= 0; i--) addExample(i * 12000);
@@ -120,11 +120,24 @@ function openShareDialog(campaign, trigger) {
   const root = document.querySelector("#modal-root");
   const url = fundraiserUrl(campaign);
   const pct = progress(campaign);
+  const story = (campaign.story || campaign.summary || "Every act of kindness can make a difference.").trim();
+  const storyExcerpt = story.length > 360 ? `${story.slice(0, story.lastIndexOf(" ", 360) > 160 ? story.lastIndexOf(" ", 360) : 360).trimEnd()}...` : story;
+  const organizerName = (campaign.organizerName || "").trim();
   const previousOverflow = document.body.style.overflow;
   document.body.style.overflow = "hidden";
-  root.innerHTML = `<div class="modal-backdrop share-backdrop" role="presentation"><section class="share-dialog" role="dialog" aria-modal="true" aria-labelledby="share-dialog-title"><button type="button" class="modal-close" aria-label="Close share window">×</button><h2 id="share-dialog-title">Share this fundraiser</h2><p>Help more people discover this fundraiser.</p><div class="share-preview"><div class="share-preview-image"><img src="${esc(campaign.image)}" alt=""></div><div class="share-preview-body"><img class="share-preview-logo" src="/kindwell-logo.png" alt="Kindwell"><div class="share-preview-raised">${esc(money(campaign.raised))} raised</div><div class="share-preview-ring" style="--pct:${pct}" aria-label="${pct} percent funded"><span>${pct}%</span></div><h3>${esc(campaign.title)}</h3><span class="share-preview-donate">Donate now!</span><div class="share-preview-url">${esc(url)}</div></div></div><label for="share-link">Fundraiser link</label><div class="share-link-row"><input id="share-link" type="text" readonly value="${esc(url)}"><button type="button" class="button" id="share-copy">Copy link</button></div><p class="share-status" role="status" aria-live="polite"></p>${navigator.share ? `<button type="button" class="button button-light share-native">Share fundraiser</button>` : ""}</section></div>`;
+  root.innerHTML = `<div class="modal-backdrop share-backdrop" role="presentation"><section class="share-dialog" role="dialog" aria-modal="true" aria-labelledby="share-dialog-title"><button type="button" class="modal-close" aria-label="Close share window">×</button><h2 id="share-dialog-title">Share this fundraiser</h2><p>Help more people discover this fundraiser.</p><div class="share-slides" aria-label="Fundraiser share preview"><article class="share-preview share-slide" aria-label="Slide 1 of 2"><div class="share-preview-image"><img src="${esc(campaign.image)}" alt=""></div><div class="share-preview-body"><img class="share-preview-logo" src="/kindwell-logo.png" alt="Kindwell"><div class="share-preview-raised">${esc(money(campaign.raised))} raised</div><div class="share-preview-ring" style="--pct:${pct}" aria-label="${pct} percent funded"><span>${pct}%</span></div><h3>${esc(campaign.title)}</h3><span class="share-preview-donate">Donate now!</span><div class="share-preview-url">${esc(url)}</div></div></article><article class="share-story-slide share-slide" aria-label="Slide 2 of 2"><div class="share-story-card"><span class="share-story-quote" aria-hidden="true">&ldquo;</span><p>${esc(storyExcerpt)}</p><span class="share-story-quote share-story-quote-end" aria-hidden="true">&rdquo;</span><strong class="share-story-author">${esc(organizerName || "The fundraiser organizer")}</strong><span class="share-story-title">${esc(campaign.title)}</span></div></article></div><div class="share-slide-dots" role="group" aria-label="Choose a preview slide"><button type="button" class="share-slide-dot active" aria-label="Show fundraiser cover" aria-current="true"></button><button type="button" class="share-slide-dot" aria-label="Show fundraiser story"></button></div><label for="share-link">Fundraiser link</label><div class="share-link-row"><input id="share-link" type="text" readonly value="${esc(url)}"><button type="button" class="button" id="share-copy">Copy link</button></div><p class="share-status" role="status" aria-live="polite"></p>${navigator.share ? `<button type="button" class="button button-light share-native">Share fundraiser</button>` : ""}</section></div>`;
   const dialog = root.querySelector(".share-dialog");
   const notice = root.querySelector(".share-status");
+  const slides = root.querySelector(".share-slides");
+  const slideDots = [...root.querySelectorAll(".share-slide-dot")];
+  const updateSlideDots = () => {
+    const activeIndex = Math.min(1, Math.round(slides.scrollLeft / slides.clientWidth));
+    slideDots.forEach((dot, index) => {
+      if (index === activeIndex) dot.setAttribute("aria-current", "true");
+      else dot.removeAttribute("aria-current");
+      dot.classList.toggle("active", index === activeIndex);
+    });
+  };
   const close = () => {
     document.removeEventListener("keydown", handleKey);
     document.body.style.overflow = previousOverflow;
@@ -144,6 +157,8 @@ function openShareDialog(campaign, trigger) {
   root.querySelector(".modal-backdrop").addEventListener("click", event => { if (event.target === event.currentTarget) close(); });
   root.querySelector("#share-link").addEventListener("click", event => event.currentTarget.select());
   root.querySelector("#share-copy").addEventListener("click", () => copyFundraiserLink(url, notice));
+  slides.addEventListener("scroll", updateSlideDots, { passive: true });
+  slideDots.forEach((dot, index) => dot.addEventListener("click", () => slides.scrollTo({ left: slides.clientWidth * index, behavior: "smooth" })));
   root.querySelector(".share-native")?.addEventListener("click", async () => {
     try { await navigator.share({ title: campaign.title, url }); }
     catch (issue) { if (issue.name !== "AbortError") notice.textContent = "Couldn't open sharing. Please copy the link instead."; }

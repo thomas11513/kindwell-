@@ -35,3 +35,16 @@ test("copying reports clipboard failures and allows manual copying", async () =>
     assert.match(notice.textContent, /select and copy it manually/);
   }
 });
+
+test("share preview has a swipeable second slide with a short escaped fundraiser story", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "wwwroot", "app.js"), "utf8");
+  const start = source.indexOf("function openShareDialog(");
+  const end = source.indexOf("function slugify(", start);
+  const shareSource = source.slice(start, end);
+  assert.match(shareSource, /story\.length > 360/);
+  assert.match(shareSource, /class="share-story-slide share-slide" aria-label="Slide 2 of 2"/);
+  assert.match(shareSource, /share-story-author/);
+  assert.match(shareSource, /share-slide-dot/);
+  assert.match(shareSource, /slides\.scrollTo/);
+  assert.match(shareSource, /esc\(storyExcerpt\)/);
+});

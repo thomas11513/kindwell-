@@ -13,6 +13,13 @@ const balance = context.simulatedBalance;
 const startedAt = "2026-01-01T00:00:00Z";
 const at = hours => Date.parse(startedAt) + hours * 3600000;
 
+test("payment activity displays up to 500 clearly labeled simulation entries", () => {
+  const limit = Number(source.match(/const PAYMENT_ACTIVITY_LIMIT = (\d+);/)?.[1]);
+  assert.equal(limit, 500);
+  assert.match(source, /<small>Fictional example<\/small>/);
+  assert.match(source, />SIMULATION ONLY<\/span>/);
+});
+
 test("demo uses five dollars above $10,000 and two dollars at or below it", () => {
   assert.equal(balance({ startedAt, startingAmount: 12345, goal: 1000001 }, at(5)), 12845);
   assert.equal(balance({ startedAt, startingAmount: 12345, goal: 1000000 }, at(5)), 12545);
