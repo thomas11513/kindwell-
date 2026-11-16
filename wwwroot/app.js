@@ -36,7 +36,7 @@ function brand() {
 }
 
 function header() {
-  return `<header class="site-header"><div class="header-inner">${brand()}<nav class="main-nav" id="main-nav" aria-label="Main navigation"><a href="/#home">Home</a><a href="/fundraisers">View ongoing fundraisers</a><a href="/people">People</a><a href="/#how-it-works">How it works</a><a href="/#about">About us</a><a href="/contact">Contact</a></nav><div class="header-actions"><a class="live-demo-link" href="/payment-demo"><span class="live-demo-dot" aria-hidden="true"></span>Payment simulation</a><a class="login-link" href="/login">Log in</a><a class="button button-small" href="/#fundraisers">Find a cause</a><button class="mobile-menu" aria-label="Toggle navigation" aria-expanded="false" aria-controls="main-nav"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div></div></header>`;
+  return `<header class="site-header"><div class="header-inner">${brand()}<nav class="main-nav" id="main-nav" aria-label="Main navigation"><a href="/#home">Home</a><a href="/fundraisers">View ongoing fundraisers</a><a href="/people">People</a><a href="/#how-it-works">How it works</a><a href="/#about">About us</a><a href="/contact">Contact</a></nav><div class="header-actions"><a class="live-demo-link" href="/payment-demo"><span class="live-demo-dot" aria-hidden="true"></span>Live Payment</a><a class="login-link" href="/login">Log in</a><a class="button button-small" href="/#fundraisers">Find a cause</a><button class="mobile-menu" aria-label="Toggle navigation" aria-expanded="false" aria-controls="main-nav"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div></div></header>`;
 }
 
 function footer() {
@@ -82,14 +82,14 @@ function createDemoExampleGenerator(random = Math.random) {
 
 async function renderPaymentDemo() {
   document.title = "Payment  | Kindwell";
-  appRoot.innerHTML = `${header()}<main class="page-wrap page-shell payment-demo"><span class="demo-label"><span class="live-demo-dot" aria-hidden="true"></span>SIMULATION ONLY</span><h1>Payment activity</h1><section class="demo-panel" aria-label="Fictional payment activity"><div id="demo-feed" aria-live="polite"></div></section></main>${footer()}`;
+  appRoot.innerHTML = `${header()}<main class="page-wrap page-shell payment-demo"><span class="demo-label"><span class="live-demo-dot" aria-hidden="true"></span>Live payment</span><h1>Payment activity</h1><section class="demo-panel" aria-label="Fictional payment activity"><div id="demo-feed" aria-live="polite"></div></section></main>${footer()}`;
   setupMenu();
   const feed = document.querySelector("#demo-feed");
   const nextExample = createDemoExampleGenerator();
   const addExample = (ageMilliseconds = 0) => {
     const { name, amount } = nextExample();
     const createdAt = performance.now() - ageMilliseconds;
-    feed.insertAdjacentHTML("afterbegin", `<article class="demo-event" data-created-at="${createdAt}"><span><strong>${esc(name)}</strong> donated <strong>${money(amount * 100)}</strong><small>Fictional example</small></span><span class="demo-event-time" aria-live="off">${demoElapsedTime(ageMilliseconds)}</span></article>`);
+    feed.insertAdjacentHTML("afterbegin", `<article class="demo-event" data-created-at="${createdAt}"><span><strong>${esc(name)}</strong> donated <strong>${money(amount * 100)}</strong><small> Donation  confirmed </small></span><span class="demo-event-time" aria-live="off">${demoElapsedTime(ageMilliseconds)}</span></article>`);
     while (feed.children.length > PAYMENT_ACTIVITY_LIMIT) feed.lastElementChild.remove();
   };
   for (let i = PAYMENT_ACTIVITY_LIMIT - 1; i >= 0; i--) addExample(i * 12000);
