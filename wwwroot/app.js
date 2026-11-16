@@ -88,7 +88,7 @@ async function renderPaymentDemo() {
   const addExample = () => {
     const { name, amount } = nextExample();
     const createdAt = performance.now();
-    feed.insertAdjacentHTML("afterbegin", `<article class="demo-event" data-created-at="${createdAt}"><span><strong>${esc(name)}</strong> donated <strong>${money(amount * 100)}</strong><small>Fictional example</small></span><span class="demo-event-time" aria-live="off">0s ago</span></article>`);
+    feed.insertAdjacentHTML("afterbegin", `<article class="demo-event" data-created-at="${createdAt}"><span><strong>${esc(name)}</strong> donated <strong>${money(amount * 100)}</strong><small> donation confirmed</small></span><span class="demo-event-time" aria-live="off">0s ago</span></article>`);
     while (feed.children.length > 6) feed.lastElementChild.remove();
   };
   for (let i = 0; i < 4; i++) addExample();
