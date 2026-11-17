@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 
 const base = process.env.SOCIAL_TEST_URL;
 const canonicalOrigin = process.env.SOCIAL_TEST_CANONICAL_ORIGIN || "https://kindwell.care";
@@ -114,6 +115,32 @@ test("generated images use each cover without changing the original", { skip: !b
   assert.equal((await fetch(`${base}/social-images/not-a-real-fundraiser.jpg`)).status, 404);
   for (const slug of ["social-missing", "social-invalid", "social-private"])
     assert.equal((await fetch(`${base}/social-images/${slug}.jpg`)).status, 502);
+});
+
+test("portrait covers fill both edges of the photo area", {
+  skip: !base || !process.env.SOCIAL_TEST_FIXTURES || process.platform !== "win32"
+}, async () => {
+  const response = await fetch(`${base}/social-images/social-portrait.jpg`);
+  assert.equal(response.status, 200);
+  const jpeg = Buffer.from(await response.arrayBuffer()).toString("base64");
+  const script = `
+    Add-Type -AssemblyName System.Drawing
+    $stream = [System.IO.MemoryStream]::new([Convert]::FromBase64String([Console]::In.ReadToEnd()))
+    $bitmap = [System.Drawing.Bitmap]::new($stream)
+    try {
+      @(@(510,200), @(1190,200)) | ForEach-Object {
+        $color = $bitmap.GetPixel($_[0], $_[1])
+        "$($color.R),$($color.G),$($color.B)"
+      }
+    } finally { $bitmap.Dispose(); $stream.Dispose() }
+  `;
+  const pixels = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+    input: jpeg, encoding: "utf8"
+  });
+  assert.equal(pixels.status, 0, pixels.stderr);
+  const colors = pixels.stdout.trim().split(/\r?\n/).map(line => line.split(",").map(Number));
+  assert.equal(colors.length, 2);
+  for (const [red, green, blue] of colors) assert.ok(red < 50 && green < 50 && blue > 200);
 });
 
 test("updating an uploaded cover changes the social image URL", { skip: !base || !process.env.SOCIAL_TEST_FIXTURES || !process.env.SOCIAL_TEST_UPLOAD_DIR }, async () => {

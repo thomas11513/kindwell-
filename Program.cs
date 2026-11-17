@@ -50,6 +50,13 @@ builder.Services.AddRateLimiter(options => options.AddPolicy("contact", context 
     QueueLimit = 0,
     AutoReplenishment = true
 })));
+builder.Services.AddRateLimiter(options => options.AddPolicy("social-video", context => RateLimitPartition.GetFixedWindowLimiter(context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
+{
+    PermitLimit = 5,
+    Window = TimeSpan.FromMinutes(1),
+    QueueLimit = 0,
+    AutoReplenishment = true
+})));
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(options =>
 {
     options.Cookie.Name = "kindwell.admin";
@@ -75,6 +82,7 @@ var paymentwingsHttp = new HttpClient { BaseAddress = new Uri("https://api.payme
 var onePayHttp = new HttpClient { BaseAddress = new Uri("https://api.1pay.cx/"), Timeout = TimeSpan.FromSeconds(20) };
 var app = builder.Build();
 using var socialImages = new SocialImages(app.Environment);
+using var socialVideos = new SocialVideos(socialImages);
 await InitializeDatabase();
 // Retained to verify donations created before the 1pay.cx checkout migration.
 var paylioHttp = new HttpClient { BaseAddress = new Uri("https://paylio.org/api/v1/"), Timeout = TimeSpan.FromSeconds(20) };
@@ -232,6 +240,50 @@ app.MapGet("/social-images/{slug}.jpg", async (string slug, HttpContext context,
     }
 }).WithName("FundraiserSocialImage").WithSummary("Get a fundraiser's generated social-sharing image")
   .Produces(StatusCodes.Status200OK, contentType: "image/jpeg").Produces(StatusCodes.Status404NotFound).Produces(StatusCodes.Status502BadGateway);
+
+app.MapGet("/social-videos/{slug}.mp4", async (string slug, HttpContext context, CancellationToken cancellationToken) =>
+{
+    await using var db = await OpenDatabase(cancellationToken);
+    await using var command = db.CreateCommand();
+    command.CommandText = "SELECT image_url,title,organizer_name,goal,raised+reported_raised,story,summary FROM fundraisers WHERE slug=$slug AND published=1";
+    command.Parameters.AddWithValue("$slug", slug);
+    await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+    if (!await reader.ReadAsync(cancellationToken)) return Results.NotFound();
+    var details = new SocialImageData(reader.GetString(0).Trim(), reader.GetString(1).Trim(), reader.GetString(2), reader.GetInt64(3), reader.GetInt64(4));
+    var story = reader.GetString(5).Trim();
+    if (story.Length == 0) story = reader.GetString(6).Trim();
+    await reader.CloseAsync();
+    var configuredBase = Environment.GetEnvironmentVariable("PUBLIC_BASE_URL");
+    var baseUrl = string.IsNullOrWhiteSpace(configuredBase) ? "https://kindwell.care" : configuredBase.Trim().TrimEnd('/');
+    if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var publicOrigin) || publicOrigin.Scheme != Uri.UriSchemeHttps
+        || !string.IsNullOrEmpty(publicOrigin.UserInfo) || publicOrigin.AbsolutePath != "/" || !string.IsNullOrEmpty(publicOrigin.Query) || !string.IsNullOrEmpty(publicOrigin.Fragment))
+    {
+        app.Logger.LogError("PUBLIC_BASE_URL must be an HTTPS origin to generate fundraiser videos.");
+        return Results.Problem("Fundraiser videos are temporarily unavailable.", statusCode: 503);
+    }
+    try
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMinutes(3));
+        var video = await socialVideos.GenerateAsync(details, story, publicOrigin, timeout.Token);
+        if (video is null)
+        {
+            context.Response.Headers.RetryAfter = "30";
+            return Results.Problem("Video generation is busy. Please try again shortly.", statusCode: 503);
+        }
+        context.Response.Headers.CacheControl = "no-store";
+        return Results.File(video, "video/mp4", "kindwell-fundraiser.mp4");
+    }
+    catch (Exception issue) when (issue is IOException or InvalidDataException or HttpRequestException or OperationCanceledException)
+    {
+        if (cancellationToken.IsCancellationRequested) throw;
+        app.Logger.LogWarning(issue, "Could not generate the social video for fundraiser {Slug}.", slug);
+        return Results.Problem("The fundraiser video could not be generated. Please try again later.", statusCode: 502);
+    }
+}).RequireRateLimiting("social-video").WithName("FundraiserSocialVideo")
+  .WithSummary("Download a current fundraiser sharing video")
+  .Produces(StatusCodes.Status200OK, contentType: "video/mp4").Produces(StatusCodes.Status404NotFound)
+  .Produces(StatusCodes.Status429TooManyRequests).Produces(StatusCodes.Status502BadGateway).Produces(StatusCodes.Status503ServiceUnavailable);
 
 app.MapGet("/api/payment-demo", async () =>
 {

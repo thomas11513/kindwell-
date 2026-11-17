@@ -134,27 +134,44 @@ function openShareDialog(campaign, trigger) {
   const root = document.querySelector("#modal-root");
   const url = fundraiserUrl(campaign);
   const pct = progress(campaign);
-  const story = (campaign.story || campaign.summary || "Every act of kindness can make a difference.").trim();
-  const storyExcerpt = story.length > 360 ? `${story.slice(0, story.lastIndexOf(" ", 360) > 160 ? story.lastIndexOf(" ", 360) : 360).trimEnd()}...` : story;
+  const story = (campaign.story || "").trim() || (campaign.summary || "").trim();
+  const storyExcerpt = story.length > 220 ? `${story.slice(0, story.lastIndexOf(" ", 220) > 120 ? story.lastIndexOf(" ", 220) : 220).trimEnd()}…` : story;
   const organizerName = (campaign.organizerName || "").trim();
   const previousOverflow = document.body.style.overflow;
   document.body.style.overflow = "hidden";
-  root.innerHTML = `<div class="modal-backdrop share-backdrop" role="presentation"><section class="share-dialog" role="dialog" aria-modal="true" aria-labelledby="share-dialog-title"><button type="button" class="modal-close" aria-label="Close share window">×</button><h2 id="share-dialog-title">Share this fundraiser</h2><p>Help more people discover this fundraiser.</p><div class="share-slides" aria-label="Fundraiser share preview"><article class="share-preview share-slide" aria-label="Slide 1 of 2"><div class="share-preview-image"><img src="${esc(campaign.image)}" alt=""></div><div class="share-preview-body"><img class="share-preview-logo" src="/kindwell-logo.png" alt="Kindwell"><div class="share-preview-raised">${esc(money(campaign.raised))} raised</div><div class="share-preview-ring" style="--pct:${pct}" aria-label="${pct} percent funded"><span>${pct}%</span></div><h3>${esc(campaign.title)}</h3><span class="share-preview-donate">Donate now!</span><div class="share-preview-url">${esc(url)}</div></div></article><article class="share-story-slide share-slide" aria-label="Slide 2 of 2"><div class="share-story-card"><span class="share-story-quote" aria-hidden="true">&ldquo;</span><p>${esc(storyExcerpt)}</p><span class="share-story-quote share-story-quote-end" aria-hidden="true">&rdquo;</span><strong class="share-story-author">${esc(organizerName || "The fundraiser organizer")}</strong><span class="share-story-title">${esc(campaign.title)}</span></div></article></div><div class="share-slide-dots" role="group" aria-label="Choose a preview slide"><button type="button" class="share-slide-dot active" aria-label="Show fundraiser cover" aria-current="true"></button><button type="button" class="share-slide-dot" aria-label="Show fundraiser story"></button></div><label for="share-link">Fundraiser link</label><div class="share-link-row"><input id="share-link" type="text" readonly value="${esc(url)}"><button type="button" class="button" id="share-copy">Copy link</button></div><p class="share-status" role="status" aria-live="polite"></p>${navigator.share ? `<button type="button" class="button button-light share-native">Share fundraiser</button>` : ""}</section></div>`;
+  root.innerHTML = `<div class="modal-backdrop share-backdrop" role="presentation"><section class="share-dialog" role="dialog" aria-modal="true" aria-labelledby="share-dialog-title"><button type="button" class="modal-close" aria-label="Close share window">×</button><h2 id="share-dialog-title">Share this fundraiser</h2><p>Help more people discover this fundraiser.</p><div class="share-slides" aria-label="Fundraiser share preview"><div class="share-slide-track"><article class="share-preview share-slide" aria-label="Slide 1 of 2"><div class="share-preview-body"><div class="share-card-brand"><img src="/kindwell-logo.png" alt=""><span>kindwell</span></div><h3>${esc(campaign.title)}</h3><div class="share-preview-organizer">Organized by <strong>${esc(organizerName || "Organizer not specified")}</strong></div><div class="share-preview-progress"><div><strong>${esc(money(campaign.raised))}</strong> raised <span>of ${esc(money(campaign.goal))}</span></div><div class="share-progress-track" role="progressbar" aria-label="Fundraiser progress" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><div style="width:${pct}%"></div></div><small>${pct}% funded</small></div></div><div class="share-preview-image"><img src="${esc(campaign.image)}" alt=""><span class="share-preview-donate">Give a little good</span></div></article><article class="share-story-slide share-slide" aria-label="Slide 2 of 2" aria-hidden="true"><div class="share-story-content"><div class="share-card-brand"><img src="/kindwell-logo.png" alt=""><span>kindwell</span></div><span class="share-story-label">THE STORY</span><p>${esc(storyExcerpt || "No story provided yet.")}</p><div class="share-story-author">${esc(organizerName || "Organizer not specified")} <span>· Organizer</span></div><div class="share-story-title">${esc(campaign.title)}</div></div><div class="share-story-image"><img src="${esc(campaign.image)}" alt=""><span aria-hidden="true">“</span></div></article></div></div><div class="share-slide-dots" role="group" aria-label="Choose a preview slide"><button type="button" class="share-slide-dot active" aria-label="Show fundraiser cover" aria-current="true"></button><button type="button" class="share-slide-dot" aria-label="Show fundraiser story"></button></div><label for="share-link">Fundraiser link</label><div class="share-link-row"><input id="share-link" type="text" readonly value="${esc(url)}"><button type="button" class="button" id="share-copy">Copy link</button></div><p class="share-status" role="status" aria-live="polite"></p>${navigator.share ? `<button type="button" class="button button-light share-native">Share fundraiser</button>` : ""}</section></div>`;
   const dialog = root.querySelector(".share-dialog");
   const notice = root.querySelector(".share-status");
   const socialUrls = socialShareUrls(campaign, url);
   root.querySelector(".share-slide-dots").insertAdjacentHTML("afterend", `<div class="share-social"><a class="button button-light" href="${esc(socialUrls.facebook)}" target="_blank" rel="noopener noreferrer">Share on Facebook</a><a class="button button-light" href="${esc(socialUrls.whatsapp)}" target="_blank" rel="noopener noreferrer">Share on WhatsApp</a></div>`);
+  root.querySelector(".share-social").insertAdjacentHTML("afterend", `<div class="share-video-actions"><button type="button" class="button button-light" data-video-platform="TikTok">Share to TikTok</button><button type="button" class="button button-light" data-video-platform="YouTube Shorts">Share to YouTube</button><button type="button" class="button" id="share-video-download">Download Video</button></div><p class="share-video-instructions" role="status">Download the video, then upload it yourself to TikTok or YouTube Shorts. Copy the fundraiser link to include with your post.</p>`);
+  root.querySelector("#share-copy").textContent = "Copy Fundraiser Link";
+  const videoInstructions = root.querySelector(".share-video-instructions");
+  const videoDownload = root.querySelector("#share-video-download");
+  let videoRequest;
   const slides = root.querySelector(".share-slides");
+  const track = root.querySelector(".share-slide-track");
+  const cards = [...root.querySelectorAll(".share-slide")];
   const slideDots = [...root.querySelectorAll(".share-slide-dot")];
-  const updateSlideDots = () => {
-    const activeIndex = Math.min(1, Math.round(slides.scrollLeft / slides.clientWidth));
+  let activeIndex = 0;
+  let timer;
+  const showSlide = index => {
+    const changed = index !== activeIndex;
+    activeIndex = index;
+    track.style.transform = `translateX(-${index * 50}%)`;
+    cards.forEach((card, cardIndex) => card.setAttribute("aria-hidden", String(cardIndex !== index)));
     slideDots.forEach((dot, index) => {
       if (index === activeIndex) dot.setAttribute("aria-current", "true");
       else dot.removeAttribute("aria-current");
       dot.classList.toggle("active", index === activeIndex);
     });
+    clearTimeout(timer);
+    const transitionTime = changed && !window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 500 : 0;
+    timer = setTimeout(() => showSlide(1 - activeIndex), 5000 + transitionTime);
   };
   const close = () => {
+    clearTimeout(timer);
+    videoRequest?.abort();
     document.removeEventListener("keydown", handleKey);
     document.body.style.overflow = previousOverflow;
     root.innerHTML = "";
@@ -173,8 +190,47 @@ function openShareDialog(campaign, trigger) {
   root.querySelector(".modal-backdrop").addEventListener("click", event => { if (event.target === event.currentTarget) close(); });
   root.querySelector("#share-link").addEventListener("click", event => event.currentTarget.select());
   root.querySelector("#share-copy").addEventListener("click", () => copyFundraiserLink(url, notice));
-  slides.addEventListener("scroll", updateSlideDots, { passive: true });
-  slideDots.forEach((dot, index) => dot.addEventListener("click", () => slides.scrollTo({ left: slides.clientWidth * index, behavior: "smooth" })));
+  root.querySelectorAll("[data-video-platform]").forEach(button => button.addEventListener("click", () => {
+    videoInstructions.textContent = button.dataset.videoPlatform === "TikTok"
+      ? "Download the video, open TikTok, tap +, and upload it. Copy the fundraiser link to share with your post where supported. Kindwell does not publish for you."
+      : "Download the video, open YouTube, tap Create and upload it as a Short. Copy the fundraiser link into your description. Kindwell does not publish for you.";
+  }));
+  videoDownload.addEventListener("click", async () => {
+    videoRequest = new AbortController();
+    videoDownload.disabled = true;
+    notice.textContent = "Creating your video. This may take a few minutes.";
+    try {
+      const response = await fetch(`/social-videos/${encodeURIComponent(campaign.slug)}.mp4`, { signal: videoRequest.signal });
+      if (!response.ok) {
+        const problem = await response.json().catch(() => null);
+        throw new Error(problem?.detail || `Video generation failed (${response.status}). Please try again.`);
+      }
+      const video = await response.blob();
+      const objectUrl = URL.createObjectURL(video);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = "kindwell-fundraiser.mp4";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+      notice.textContent = "Video ready. Upload it to your chosen platform.";
+    } catch (issue) {
+      if (issue.name !== "AbortError") notice.textContent = issue.message || "Couldn't download the video. Please try again.";
+    } finally {
+      videoDownload.disabled = false;
+      videoRequest = null;
+    }
+  });
+  slideDots.forEach((dot, index) => dot.addEventListener("click", () => showSlide(index)));
+  let touchStartX = null;
+  slides.addEventListener("touchstart", event => { touchStartX = event.touches[0].clientX; }, { passive: true });
+  slides.addEventListener("touchend", event => {
+    if (touchStartX === null) return;
+    const distance = event.changedTouches[0].clientX - touchStartX;
+    touchStartX = null;
+    if (Math.abs(distance) > 40) showSlide(distance < 0 ? 1 : 0);
+  }, { passive: true });
+  slides.addEventListener("touchcancel", () => { touchStartX = null; }, { passive: true });
+  showSlide(0);
   root.querySelector(".share-native")?.addEventListener("click", async () => {
     try { await navigator.share({ title: campaign.title, url }); }
     catch (issue) { if (issue.name !== "AbortError") notice.textContent = "Couldn't open sharing. Please copy the link instead."; }

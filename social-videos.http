@@ -1,0 +1,7 @@
+@baseUrl = http://localhost:5080
+
+### Download a freshly generated video for a published fundraiser
+GET {{baseUrl}}/social-videos/a-brighter-start-for-maya.mp4
+
+### Unknown fundraiser
+GET {{baseUrl}}/social-videos/not-a-real-fundraiser.mp4

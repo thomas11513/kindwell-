@@ -35,7 +35,7 @@ public sealed class SocialImages : IDisposable
     {
         var local = LocalFile(fundraiser.Source, publicOrigin);
         var stamp = local is { Exists: true } ? local.LastModified.UtcTicks.ToString() : "";
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes("kindwell-card-v1\n" + JsonSerializer.Serialize(fundraiser) + "\n" + stamp));
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes("kindwell-card-v2\n" + JsonSerializer.Serialize(fundraiser) + "\n" + stamp));
         return Convert.ToHexString(hash).ToLowerInvariant()[..20];
     }
 
@@ -46,61 +46,18 @@ public sealed class SocialImages : IDisposable
         try
         {
             if (cache.TryGetValue(cacheKey, out cached) && cached is not null) return cached;
-            var source = fundraiser.Source;
-            var file = LocalFile(source, publicOrigin);
-            byte[] data;
-            if (file is not null)
-            {
-                if (!file.Exists || file.IsDirectory) throw new FileNotFoundException("Fundraiser cover image was not found.");
-                if (file.Length > MaxBytes) throw new InvalidDataException("Fundraiser cover image exceeds the size limit.");
-                await using var stream = file.CreateReadStream();
-                data = await ReadLimitedAsync(stream, cancellationToken);
-            }
-            else
-            {
-                if (!Uri.TryCreate(source, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(uri.UserInfo))
-                    throw new InvalidDataException("Fundraiser cover must be a local image or a public HTTPS URL.");
-                data = await DownloadAsync(uri, cancellationToken);
-            }
-
+            var data = await ReadCoverAsync(fundraiser.Source, publicOrigin, cancellationToken);
             using var encoded = SKData.CreateCopy(data);
             using var codec = SKCodec.Create(encoded);
             if (codec is null || (long)codec.Info.Width * codec.Info.Height > MaxPixels)
                 throw new InvalidDataException("Fundraiser cover has invalid or excessive dimensions.");
             using var image = SKBitmap.Decode(codec) ?? throw new InvalidDataException("Fundraiser cover could not be decoded.");
-            var width = image.Width;
-            var height = image.Height;
-            var origin = codec.EncodedOrigin;
-            var rotated = origin is SKEncodedOrigin.LeftTop or SKEncodedOrigin.RightTop or SKEncodedOrigin.RightBottom or SKEncodedOrigin.LeftBottom;
-            var orientedWidth = rotated ? height : width;
-            var orientedHeight = rotated ? width : height;
             using var surface = SKSurface.Create(new SKImageInfo(1200, 630)) ?? throw new InvalidDataException("Could not create social image.");
             var canvas = surface.Canvas;
             canvas.Clear(SKColors.White);
             using var photoBackground = new SKPaint { Color = new SKColor(232, 238, 233) };
             canvas.DrawRect(new SKRect(500, 0, 1200, 420), photoBackground);
-            canvas.Save();
-            canvas.ClipRect(new SKRect(500, 0, 1200, 420));
-            var scale = orientedWidth < orientedHeight
-                ? Math.Min(700f / orientedWidth, 420f / orientedHeight)
-                : Math.Max(700f / orientedWidth, 420f / orientedHeight);
-            canvas.Translate(500 + (700 - orientedWidth * scale) / 2, (420 - orientedHeight * scale) / 2);
-            canvas.Scale(scale);
-            var transform = origin switch
-            {
-                SKEncodedOrigin.TopRight => new SKMatrix { ScaleX = -1, ScaleY = 1, TransX = width, Persp2 = 1 },
-                SKEncodedOrigin.BottomRight => new SKMatrix { ScaleX = -1, ScaleY = -1, TransX = width, TransY = height, Persp2 = 1 },
-                SKEncodedOrigin.BottomLeft => new SKMatrix { ScaleX = 1, ScaleY = -1, TransY = height, Persp2 = 1 },
-                SKEncodedOrigin.LeftTop => new SKMatrix { SkewX = 1, SkewY = 1, Persp2 = 1 },
-                SKEncodedOrigin.RightTop => new SKMatrix { SkewX = -1, SkewY = 1, TransX = height, Persp2 = 1 },
-                SKEncodedOrigin.RightBottom => new SKMatrix { SkewX = -1, SkewY = -1, TransX = height, TransY = width, Persp2 = 1 },
-                SKEncodedOrigin.LeftBottom => new SKMatrix { SkewX = 1, SkewY = -1, TransY = width, Persp2 = 1 },
-                _ => SKMatrix.Identity
-            };
-            canvas.Concat(transform);
-            using var sourceImage = SKImage.FromBitmap(image);
-            canvas.DrawImage(sourceImage, 0, 0, new SKSamplingOptions(SKCubicResampler.Mitchell));
-            canvas.Restore();
+            DrawCover(canvas, image, codec.EncodedOrigin, new SKRect(500, 0, 1200, 420));
             DrawCard(canvas, fundraiser);
             using var snapshot = surface.Snapshot();
             using var jpeg = snapshot.Encode(SKEncodedImageFormat.Jpeg, 85) ?? throw new InvalidDataException("Could not encode social image.");
@@ -109,6 +66,133 @@ public sealed class SocialImages : IDisposable
             return result;
         }
         finally { generationSlots.Release(); }
+    }
+
+    private static void DrawCover(SKCanvas canvas, SKBitmap image, SKEncodedOrigin origin, SKRect bounds, bool contain = false)
+    {
+        var width = image.Width;
+        var height = image.Height;
+        var rotated = origin is SKEncodedOrigin.LeftTop or SKEncodedOrigin.RightTop or SKEncodedOrigin.RightBottom or SKEncodedOrigin.LeftBottom;
+        var orientedWidth = rotated ? height : width;
+        var orientedHeight = rotated ? width : height;
+        var scale = contain ? Math.Min(bounds.Width / orientedWidth, bounds.Height / orientedHeight)
+            : Math.Max(bounds.Width / orientedWidth, bounds.Height / orientedHeight);
+        var verticalOffset = !contain && orientedWidth < orientedHeight ? 0.3f : 0.5f;
+        canvas.Save();
+        canvas.ClipRect(bounds);
+        canvas.Translate(bounds.Left + (bounds.Width - orientedWidth * scale) / 2, bounds.Top + (bounds.Height - orientedHeight * scale) * verticalOffset);
+        canvas.Scale(scale);
+        var transform = origin switch
+        {
+            SKEncodedOrigin.TopRight => new SKMatrix { ScaleX = -1, ScaleY = 1, TransX = width, Persp2 = 1 },
+            SKEncodedOrigin.BottomRight => new SKMatrix { ScaleX = -1, ScaleY = -1, TransX = width, TransY = height, Persp2 = 1 },
+            SKEncodedOrigin.BottomLeft => new SKMatrix { ScaleX = 1, ScaleY = -1, TransY = height, Persp2 = 1 },
+            SKEncodedOrigin.LeftTop => new SKMatrix { SkewX = 1, SkewY = 1, Persp2 = 1 },
+            SKEncodedOrigin.RightTop => new SKMatrix { SkewX = -1, SkewY = 1, TransX = height, Persp2 = 1 },
+            SKEncodedOrigin.RightBottom => new SKMatrix { SkewX = -1, SkewY = -1, TransX = height, TransY = width, Persp2 = 1 },
+            SKEncodedOrigin.LeftBottom => new SKMatrix { SkewX = 1, SkewY = -1, TransY = width, Persp2 = 1 },
+            _ => SKMatrix.Identity
+        };
+        canvas.Concat(transform);
+        using var sourceImage = SKImage.FromBitmap(image);
+        canvas.DrawImage(sourceImage, 0, 0, new SKSamplingOptions(SKCubicResampler.Mitchell));
+        canvas.Restore();
+    }
+
+    public async Task<(byte[] Main, byte[] Story)> GenerateVideoCardsAsync(SocialImageData fundraiser, string story, Uri publicOrigin, CancellationToken cancellationToken)
+    {
+        var data = await ReadCoverAsync(fundraiser.Source, publicOrigin, cancellationToken);
+        using var encoded = SKData.CreateCopy(data);
+        using var codec = SKCodec.Create(encoded);
+        if (codec is null || (long)codec.Info.Width * codec.Info.Height > MaxPixels)
+            throw new InvalidDataException("Fundraiser cover has invalid or excessive dimensions.");
+        using var image = SKBitmap.Decode(codec) ?? throw new InvalidDataException("Fundraiser cover could not be decoded.");
+        using var regular = LoadFont("Lato-Regular.ttf");
+        using var bold = LoadFont("Lato-Bold.ttf");
+        using var cjk = LoadFont("NotoSansCJKsc-Regular.otf");
+        using var arabic = LoadFont("NotoSansArabic.ttf");
+        using var hebrew = LoadFont("NotoSansHebrew.ttf");
+        using var devanagari = LoadFont("NotoSansDevanagari.ttf");
+        using var emoji = LoadFont("NotoEmoji.ttf");
+        using var unifont = LoadFont("Unifont.otf");
+        using var unifontUpper = LoadFont("UnifontUpper.otf");
+        using var titleText = new CardText(true, bold, cjk, arabic, hebrew, devanagari, emoji, unifont, unifontUpper);
+        using var bodyText = new CardText(false, regular, cjk, arabic, hebrew, devanagari, emoji, unifont, unifontUpper);
+        using var logo = SKBitmap.Decode(Path.Combine(environment.WebRootPath, "kindwell-logo.png"))
+            ?? throw new InvalidDataException("Kindwell logo is missing or invalid.");
+        using var logoImage = SKImage.FromBitmap(logo);
+        using var ink = new SKPaint { Color = new SKColor(16, 62, 49), IsAntialias = true };
+        using var muted = new SKPaint { Color = new SKColor(78, 103, 89), IsAntialias = true };
+        using var lime = new SKPaint { Color = new SKColor(196, 230, 104), IsAntialias = true };
+        using var track = new SKPaint { Color = new SKColor(220, 233, 213), IsAntialias = true };
+        using var yellow = new SKPaint { Color = new SKColor(255, 223, 113), IsAntialias = true };
+
+        byte[] Render(bool isStory)
+        {
+            using var surface = SKSurface.Create(new SKImageInfo(1080, 1920)) ?? throw new InvalidDataException("Could not create video frame.");
+            var canvas = surface.Canvas;
+            canvas.Clear(isStory ? new SKColor(213, 244, 158) : new SKColor(245, 250, 237));
+            var photoLeft = isStory ? 724 : 572;
+            using (var photoBackground = new SKPaint { Color = new SKColor(220, 233, 213) })
+                canvas.DrawRect(new SKRect(photoLeft, 0, 1080, 1000), photoBackground);
+            DrawCover(canvas, image, codec.EncodedOrigin, new SKRect(photoLeft, 0, 1080, 1000), contain: true);
+            canvas.DrawImage(logoImage, new SKRect(55, 110, 127, 182), new SKSamplingOptions(SKCubicResampler.Mitchell));
+            using (var brand = new SKFont(bold, 48)) canvas.DrawText("kindwell", 145, 165, brand, ink);
+            if (isStory)
+            {
+                using (var label = new SKFont(bold, 32)) canvas.DrawText("THE STORY", 55, 295, label, muted);
+                var excerpt = story.Trim();
+                if (excerpt.Length > 240)
+                {
+                    var end = StringInfo.ParseCombiningCharacters(excerpt).Last(index => index <= 240);
+                    excerpt = excerpt[..end].TrimEnd() + "…";
+                }
+                DrawWrappedText(canvas, excerpt.Length > 0 ? excerpt : "No story provided yet.", bodyText, ink, 55, 340, 620, 850, 12, 55);
+                DrawWrappedText(canvas, "Organized by " + (string.IsNullOrWhiteSpace(fundraiser.Organizer) ? "Organizer not specified" : fundraiser.Organizer), bodyText, muted, 55, 1365, 620, 110, 2, 38);
+                DrawWrappedText(canvas, fundraiser.Title, bodyText, muted, 55, 1490, 620, 80, 2, 30);
+                using var quote = new SKFont(bold, 160);
+                canvas.DrawText("“", 960, 930, quote, yellow);
+            }
+            else
+            {
+                DrawWrappedText(canvas, fundraiser.Title, titleText, ink, 55, 290, 465, 440, 5, 75);
+                DrawWrappedText(canvas, "Organized by " + (string.IsNullOrWhiteSpace(fundraiser.Organizer) ? "Organizer not specified" : fundraiser.Organizer), bodyText, muted, 55, 805, 465, 110, 2, 38);
+                DrawWrappedText(canvas, Money(fundraiser.Raised) + " raised", titleText, ink, 55, 1170, 465, 65, 1, 48);
+                DrawWrappedText(canvas, "of " + Money(fundraiser.Goal), bodyText, muted, 55, 1240, 465, 55, 1, 38);
+                canvas.DrawRoundRect(new SKRect(55, 1335, 520, 1353), 9, 9, track);
+                var fraction = fundraiser.Goal > 0 ? Math.Clamp((double)fundraiser.Raised / fundraiser.Goal, 0, 1) : 0;
+                if (fraction > 0) canvas.DrawRoundRect(new SKRect(55, 1335, 55 + (float)(465 * fraction), 1353), 9, 9, lime);
+                using (var funded = new SKFont(regular, 32)) canvas.DrawText($"{Math.Round(fraction * 100, MidpointRounding.AwayFromZero)}% funded", 55, 1410, funded, muted);
+                canvas.DrawRoundRect(new SKRect(680, 840, 1035, 915), 38, 38, yellow);
+                using var badge = new SKFont(bold, 32);
+                canvas.DrawText("Give a little good", 857, 889, SKTextAlign.Center, badge, ink);
+            }
+            canvas.DrawRoundRect(new SKRect(70, 1665, 1010, 1830), 35, 35, yellow);
+            using (var callout = new SKFont(bold, 48))
+            {
+                canvas.DrawText("Make a Difference", 540, 1735, SKTextAlign.Center, callout, ink);
+                canvas.DrawText("Donate at Kindwell.care", 540, 1795, SKTextAlign.Center, callout, ink);
+            }
+            using var snapshot = surface.Snapshot();
+            using var png = snapshot.Encode(SKEncodedImageFormat.Png, 100) ?? throw new InvalidDataException("Could not encode video frame.");
+            return png.ToArray();
+        }
+        return (Render(false), Render(true));
+    }
+
+    private async Task<byte[]> ReadCoverAsync(string source, Uri publicOrigin, CancellationToken cancellationToken)
+    {
+        var file = LocalFile(source, publicOrigin);
+        if (file is not null)
+        {
+            if (!file.Exists || file.IsDirectory) throw new FileNotFoundException("Fundraiser cover image was not found.");
+            if (file.Length > MaxBytes) throw new InvalidDataException("Fundraiser cover image exceeds the size limit.");
+            await using var stream = file.CreateReadStream();
+            return await ReadLimitedAsync(stream, cancellationToken);
+        }
+        if (!Uri.TryCreate(source, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(uri.UserInfo))
+            throw new InvalidDataException("Fundraiser cover must be a local image or a public HTTPS URL.");
+        return await DownloadAsync(uri, cancellationToken);
     }
 
     private void DrawCard(SKCanvas canvas, SocialImageData fundraiser)
