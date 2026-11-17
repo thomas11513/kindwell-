@@ -129,7 +129,7 @@ app.MapGet("/fundraisers/{slug}", async (string slug, CancellationToken cancella
 {
     await using var db = await OpenDatabase(cancellationToken);
     await using var command = db.CreateCommand();
-    command.CommandText = "SELECT slug,title,summary,story,image_url FROM fundraisers WHERE slug=$slug AND published=1";
+    command.CommandText = "SELECT slug,title,summary,story,image_url,organizer_name,goal,raised+reported_raised FROM fundraisers WHERE slug=$slug AND published=1";
     command.Parameters.AddWithValue("$slug", slug);
     await using var reader = await command.ExecuteReaderAsync(cancellationToken);
     var template = await System.IO.File.ReadAllTextAsync(Path.Combine(app.Environment.WebRootPath, "index.html"), cancellationToken);
@@ -174,7 +174,8 @@ app.MapGet("/fundraisers/{slug}", async (string slug, CancellationToken cancella
     {
         try
         {
-            var version = socialImages.Version(imageValue, publicOrigin);
+            var details = new SocialImageData(imageValue, title, reader.GetString(5), reader.GetInt64(6), reader.GetInt64(7));
+            var version = socialImages.Version(details, publicOrigin);
             var socialImage = new Uri(publicOrigin, "/social-images/" + Uri.EscapeDataString(reader.GetString(0)) + ".jpg?v=" + version).AbsoluteUri;
             metadata.Append("<meta property=\"og:image\" content=\"").Append(encode(socialImage)).Append("\">\n")
                 .Append("<meta name=\"twitter:image\" content=\"").Append(encode(socialImage)).Append("\">\n")
@@ -200,10 +201,12 @@ app.MapGet("/social-images/{slug}.jpg", async (string slug, HttpContext context,
 {
     await using var db = await OpenDatabase(cancellationToken);
     await using var command = db.CreateCommand();
-    command.CommandText = "SELECT image_url FROM fundraisers WHERE slug=$slug AND published=1";
+    command.CommandText = "SELECT image_url,title,organizer_name,goal,raised+reported_raised FROM fundraisers WHERE slug=$slug AND published=1";
     command.Parameters.AddWithValue("$slug", slug);
-    var value = await command.ExecuteScalarAsync(cancellationToken);
-    if (value is not string source) return Results.NotFound();
+    await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+    if (!await reader.ReadAsync(cancellationToken)) return Results.NotFound();
+    var details = new SocialImageData(reader.GetString(0).Trim(), reader.GetString(1).Trim(), reader.GetString(2), reader.GetInt64(3), reader.GetInt64(4));
+    await reader.CloseAsync();
     var configuredBase = Environment.GetEnvironmentVariable("PUBLIC_BASE_URL");
     var baseUrl = string.IsNullOrWhiteSpace(configuredBase) ? "https://kindwell.care" : configuredBase.Trim().TrimEnd('/');
     if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var publicOrigin) || publicOrigin.Scheme != Uri.UriSchemeHttps
@@ -214,11 +217,10 @@ app.MapGet("/social-images/{slug}.jpg", async (string slug, HttpContext context,
     }
     try
     {
-        source = source.Trim();
-        var version = socialImages.Version(source, publicOrigin);
+        var version = socialImages.Version(details, publicOrigin);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(25));
-        var bytes = await socialImages.GenerateAsync(source, publicOrigin, slug + ":" + version, timeout.Token);
+        var bytes = await socialImages.GenerateAsync(details, publicOrigin, slug + ":" + version, timeout.Token);
         context.Response.Headers.CacheControl = "public, max-age=3600";
         return Results.File(bytes, "image/jpeg");
     }

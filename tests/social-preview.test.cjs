@@ -133,3 +133,45 @@ test("updating an uploaded cover changes the social image URL", { skip: !base ||
     await fs.utimes(file, times.atime, times.mtime);
   }
 });
+
+test("card and image URL update when fundraiser details and totals change", { skip: !base || !process.env.SOCIAL_TEST_FIXTURES || !process.env.SOCIAL_TEST_DATABASE }, async () => {
+  const { DatabaseSync } = require("node:sqlite");
+  const db = new DatabaseSync(process.env.SOCIAL_TEST_DATABASE);
+  const original = db.prepare("SELECT title,organizer_name,goal,raised,reported_raised FROM fundraisers WHERE slug=?").get("social-wide");
+  const update = db.prepare("UPDATE fundraisers SET title=?,organizer_name=?,goal=?,raised=?,reported_raised=? WHERE slug='social-wide'");
+  const snapshot = async () => {
+    const html = await (await fetch(`${base}/fundraisers/social-wide`)).text();
+    const image = socialImage(html, "social-wide");
+    const response = await fetch(new URL(image.pathname + image.search, base));
+    assert.equal(response.status, 200);
+    return { html, image: image.href, bytes: Buffer.from(await response.arrayBuffer()) };
+  };
+  try {
+    let values = ["A fundraiser title", "First Organizer", 100000, 0, 0];
+    update.run(...values);
+    let previous = await snapshot();
+    for (const [index, value] of [[0, "A different fundraiser title"], [1, "Another Organizer"], [2, 200000], [3, 50000], [4, 150000]]) {
+      values[index] = value;
+      update.run(...values);
+      const current = await snapshot();
+      assert.notEqual(current.image, previous.image);
+      assert.notDeepEqual(current.bytes, previous.bytes);
+      assert.equal(attribute(current.html, 'meta property="og:description"', "content"), "Wide cover");
+      previous = current;
+    }
+    values[0] = "帮助我的妈妈继续治疗 🎉";
+    values[1] = "محمد أحمد";
+    update.run(...values);
+    const international = await snapshot();
+    assert.equal(attribute(international.html, 'meta property="og:title"', "content"), values[0]);
+    assert.notDeepEqual(international.bytes, previous.bytes);
+    values[0] = "ช่วยเหลือครอบครัว";
+    values[1] = "W".repeat(100);
+    update.run(...values);
+    const longName = await snapshot();
+    assert.notEqual(longName.image, international.image);
+  } finally {
+    update.run(original.title, original.organizer_name, original.goal, original.raised, original.reported_raised);
+    db.close();
+  }
+});

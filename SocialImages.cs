@@ -1,9 +1,14 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.Caching.Memory;
 using SkiaSharp;
+using SkiaSharp.HarfBuzz;
+
+public sealed record SocialImageData(string Source, string Title, string Organizer, long Goal, long Raised);
 
 public sealed class SocialImages : IDisposable
 {
@@ -26,21 +31,22 @@ public sealed class SocialImages : IDisposable
         client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
     }
 
-    public string Version(string source, Uri publicOrigin)
+    public string Version(SocialImageData fundraiser, Uri publicOrigin)
     {
-        var local = LocalFile(source, publicOrigin);
+        var local = LocalFile(fundraiser.Source, publicOrigin);
         var stamp = local is { Exists: true } ? local.LastModified.UtcTicks.ToString() : "";
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(source + "\n" + stamp));
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes("kindwell-card-v1\n" + JsonSerializer.Serialize(fundraiser) + "\n" + stamp));
         return Convert.ToHexString(hash).ToLowerInvariant()[..20];
     }
 
-    public async Task<byte[]> GenerateAsync(string source, Uri publicOrigin, string cacheKey, CancellationToken cancellationToken)
+    public async Task<byte[]> GenerateAsync(SocialImageData fundraiser, Uri publicOrigin, string cacheKey, CancellationToken cancellationToken)
     {
         if (cache.TryGetValue(cacheKey, out byte[]? cached) && cached is not null) return cached;
         await generationSlots.WaitAsync(cancellationToken);
         try
         {
             if (cache.TryGetValue(cacheKey, out cached) && cached is not null) return cached;
+            var source = fundraiser.Source;
             var file = LocalFile(source, publicOrigin);
             byte[] data;
             if (file is not null)
@@ -68,13 +74,17 @@ public sealed class SocialImages : IDisposable
             var rotated = origin is SKEncodedOrigin.LeftTop or SKEncodedOrigin.RightTop or SKEncodedOrigin.RightBottom or SKEncodedOrigin.LeftBottom;
             var orientedWidth = rotated ? height : width;
             var orientedHeight = rotated ? width : height;
-            var scale = orientedWidth < orientedHeight
-                ? Math.Min(1200f / orientedWidth, 630f / orientedHeight)
-                : Math.Max(1200f / orientedWidth, 630f / orientedHeight);
             using var surface = SKSurface.Create(new SKImageInfo(1200, 630)) ?? throw new InvalidDataException("Could not create social image.");
             var canvas = surface.Canvas;
-            canvas.Clear(new SKColor(30, 37, 39));
-            canvas.Translate((1200 - orientedWidth * scale) / 2, (630 - orientedHeight * scale) / 2);
+            canvas.Clear(SKColors.White);
+            using var photoBackground = new SKPaint { Color = new SKColor(232, 238, 233) };
+            canvas.DrawRect(new SKRect(500, 0, 1200, 420), photoBackground);
+            canvas.Save();
+            canvas.ClipRect(new SKRect(500, 0, 1200, 420));
+            var scale = orientedWidth < orientedHeight
+                ? Math.Min(700f / orientedWidth, 420f / orientedHeight)
+                : Math.Max(700f / orientedWidth, 420f / orientedHeight);
+            canvas.Translate(500 + (700 - orientedWidth * scale) / 2, (420 - orientedHeight * scale) / 2);
             canvas.Scale(scale);
             var transform = origin switch
             {
@@ -90,6 +100,8 @@ public sealed class SocialImages : IDisposable
             canvas.Concat(transform);
             using var sourceImage = SKImage.FromBitmap(image);
             canvas.DrawImage(sourceImage, 0, 0, new SKSamplingOptions(SKCubicResampler.Mitchell));
+            canvas.Restore();
+            DrawCard(canvas, fundraiser);
             using var snapshot = surface.Snapshot();
             using var jpeg = snapshot.Encode(SKEncodedImageFormat.Jpeg, 85) ?? throw new InvalidDataException("Could not encode social image.");
             var result = jpeg.ToArray();
@@ -99,6 +111,181 @@ public sealed class SocialImages : IDisposable
         finally { generationSlots.Release(); }
     }
 
+    private void DrawCard(SKCanvas canvas, SocialImageData fundraiser)
+    {
+        using var regular = SKTypeface.FromFile(Path.Combine(environment.ContentRootPath, "SocialAssets", "Lato-Regular.ttf"))
+            ?? throw new InvalidDataException("Social image regular font is missing or invalid.");
+        using var bold = SKTypeface.FromFile(Path.Combine(environment.ContentRootPath, "SocialAssets", "Lato-Bold.ttf"))
+            ?? throw new InvalidDataException("Social image bold font is missing or invalid.");
+        using var cjk = LoadFont("NotoSansCJKsc-Regular.otf");
+        using var arabic = LoadFont("NotoSansArabic.ttf");
+        using var hebrew = LoadFont("NotoSansHebrew.ttf");
+        using var devanagari = LoadFont("NotoSansDevanagari.ttf");
+        using var emoji = LoadFont("NotoEmoji.ttf");
+        using var unifont = LoadFont("Unifont.otf");
+        using var unifontUpper = LoadFont("UnifontUpper.otf");
+        using var logo = SKBitmap.Decode(Path.Combine(environment.WebRootPath, "kindwell-logo.png"))
+            ?? throw new InvalidDataException("Kindwell logo is missing or invalid.");
+        using var ink = new SKPaint { Color = new SKColor(30, 37, 34), IsAntialias = true };
+        using var muted = new SKPaint { Color = new SKColor(88, 98, 91), IsAntialias = true };
+        using var green = new SKPaint { Color = new SKColor(21, 91, 67), IsAntialias = true };
+        using var white = new SKPaint { Color = SKColors.White, IsAntialias = true };
+        using var logoImage = SKImage.FromBitmap(logo);
+        canvas.DrawImage(logoImage, new SKRect(32, 30, 86, 84), new SKSamplingOptions(SKCubicResampler.Mitchell));
+        using (var brandFont = new SKFont(bold, 30))
+            canvas.DrawText("Kindwell", 99, 69, brandFont, green);
+
+        using var titleText = new CardText(true, bold, cjk, arabic, hebrew, devanagari, emoji, unifont, unifontUpper);
+        using var organizerText = new CardText(false, regular, cjk, arabic, hebrew, devanagari, emoji, unifont, unifontUpper);
+        DrawWrappedText(canvas, fundraiser.Title, titleText, ink, 32, 148, 430, 260, 4, 46);
+        using (var labelFont = new SKFont(bold, 29))
+            canvas.DrawText("Organized by", 32, 478, labelFont, muted);
+        DrawWrappedText(canvas, string.IsNullOrWhiteSpace(fundraiser.Organizer) ? "Organizer not specified" : fundraiser.Organizer,
+            organizerText, ink, 32, 523, 420, 95, 3, 35);
+
+        canvas.DrawCircle(600, 455, 111, white);
+        using var track = new SKPaint { Color = new SKColor(232, 238, 233), IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 19, StrokeCap = SKStrokeCap.Round };
+        canvas.DrawCircle(600, 455, 91, track);
+        using var progress = new SKPaint { Color = new SKColor(76, 158, 85), IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 19, StrokeCap = SKStrokeCap.Round };
+        var fraction = fundraiser.Goal > 0 ? Math.Clamp((double)fundraiser.Raised / fundraiser.Goal, 0, 1) : 0;
+        if (fraction >= 1) canvas.DrawCircle(600, 455, 91, progress);
+        else if (fraction > 0) canvas.DrawArc(new SKRect(509, 364, 691, 546), -90, (float)(360 * fraction), false, progress);
+        using var heart = new SKPath();
+        heart.MoveTo(600, 479);
+        heart.CubicTo(585, 466, 570, 455, 570, 443);
+        heart.CubicTo(570, 426, 590, 420, 600, 435);
+        heart.CubicTo(610, 420, 630, 426, 630, 443);
+        heart.CubicTo(630, 455, 615, 466, 600, 479);
+        heart.Close();
+        using var heartFill = new SKPaint { Color = progress.Color, IsAntialias = true };
+        canvas.DrawPath(heart, heartFill);
+
+        var amount = fundraiser.Goal > 0 && fundraiser.Raised < fundraiser.Goal
+            ? Money(fundraiser.Goal - Math.Max(0, fundraiser.Raised)) + " to goal"
+            : Money(Math.Max(0, fundraiser.Raised)) + " raised";
+        DrawBadge(canvas, amount, bold, 707, 425, 330, new SKColor(197, 239, 112), ink);
+        DrawBadge(canvas, "Donate now!", bold, 852, 514, 292, new SKColor(255, 215, 72), ink);
+    }
+
+    private SKTypeface LoadFont(string filename) =>
+        SKTypeface.FromFile(Path.Combine(environment.ContentRootPath, "SocialAssets", filename))
+        ?? throw new InvalidDataException($"Social image font {filename} is missing or invalid.");
+
+    private static string Money(long cents) =>
+        "$" + (cents / 100m).ToString("#,##0.##", CultureInfo.GetCultureInfo("en-US"));
+
+    private static void DrawBadge(SKCanvas canvas, string text, SKTypeface typeface, float x, float y, float width, SKColor color, SKPaint ink)
+    {
+        using var fill = new SKPaint { Color = color, IsAntialias = true };
+        canvas.DrawRoundRect(new SKRect(x, y, x + width, y + 60), 30, 30, fill);
+        using var font = new SKFont(typeface, 31);
+        while (font.Size > 18 && font.MeasureText(text) > width - 32) font.Size--;
+        canvas.DrawText(text, x + width / 2, y + 41, SKTextAlign.Center, font, ink);
+    }
+
+    private static void DrawWrappedText(SKCanvas canvas, string text, CardText font, SKPaint paint,
+        float x, float top, float width, float height, int maxLines, int maxSize)
+    {
+        font.Size = maxSize;
+        List<string> lines;
+        do
+        {
+            lines = WrapText(text, font, width);
+            if ((lines.Count <= maxLines && font.Size * (1 + Math.Max(0, lines.Count - 1) * 1.18f) <= height) || font.Size <= 1) break;
+            font.Size--;
+        } while (true);
+
+        if (lines.Count > maxLines)
+        {
+            lines = lines.Take(maxLines).ToList();
+            var last = lines[^1];
+            while (last.Length > 0 && font.Measure(last + "…") > width)
+                last = last[..StringInfo.ParseCombiningCharacters(last)[^1]];
+            lines[^1] = last.TrimEnd() + "…";
+        }
+        var lineHeight = font.Size * 1.18f;
+        for (var i = 0; i < lines.Count; i++)
+            font.Draw(canvas, lines[i], x, top + font.Size + i * lineHeight, paint);
+    }
+
+    private static List<string> WrapText(string text, CardText font, float width)
+    {
+        var lines = new List<string>();
+        var line = "";
+        foreach (var word in text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var candidate = line.Length == 0 ? word : line + " " + word;
+            if (font.Measure(candidate) <= width) { line = candidate; continue; }
+            if (line.Length > 0) { lines.Add(line); line = ""; }
+            var elements = StringInfo.GetTextElementEnumerator(word);
+            while (elements.MoveNext())
+            {
+                var part = elements.GetTextElement();
+                if (line.Length > 0 && font.Measure(line + part) > width) { lines.Add(line); line = ""; }
+                line += part;
+            }
+        }
+        if (line.Length > 0) lines.Add(line);
+        return lines;
+    }
+
+    private sealed class CardText : IDisposable
+    {
+        private readonly SKFont[] fonts;
+        private readonly SKShaper[] shapers;
+
+        public CardText(bool boldFallback, params SKTypeface[] typefaces)
+        {
+            fonts = typefaces.Select((face, index) => new SKFont(face, 1) { Embolden = boldFallback && index > 0 }).ToArray();
+            shapers = typefaces.Select(face => new SKShaper(face)).ToArray();
+        }
+
+        public float Size
+        {
+            get => fonts[0].Size;
+            set { foreach (var font in fonts) font.Size = value; }
+        }
+
+        public float Measure(string text) => Runs(text).Sum(run => shapers[run.Font].Shape(run.Text, fonts[run.Font]).Width);
+
+        public void Draw(SKCanvas canvas, string text, float x, float y, SKPaint paint)
+        {
+            var runs = Runs(text);
+            var firstLetter = text.EnumerateRunes().FirstOrDefault(Rune.IsLetter);
+            if (firstLetter.Value is >= 0x590 and <= 0x8ff) runs.Reverse();
+            foreach (var run in runs)
+            {
+                canvas.DrawShapedText(shapers[run.Font], run.Text, x, y, SKTextAlign.Left, fonts[run.Font], paint);
+                x += shapers[run.Font].Shape(run.Text, fonts[run.Font]).Width;
+            }
+        }
+
+        private List<(string Text, int Font)> Runs(string text)
+        {
+            var runs = new List<(string Text, int Font)>();
+            var elements = StringInfo.GetTextElementEnumerator(text);
+            while (elements.MoveNext())
+            {
+                var element = elements.GetTextElement();
+                var supported = string.Concat(element.EnumerateRunes()
+                    .Where(rune => Rune.GetUnicodeCategory(rune) != UnicodeCategory.Format && rune.Value is not (0xfe0e or 0xfe0f))
+                    .Select(rune => rune.ToString()));
+                var index = Array.FindIndex(fonts, font => font.ContainsGlyphs(supported));
+                if (index < 0) throw new InvalidDataException("Fundraiser text contains characters unavailable in the social image fonts.");
+                if (runs.Count > 0 && runs[^1].Font == index)
+                    runs[^1] = (runs[^1].Text + element, index);
+                else
+                    runs.Add((element, index));
+            }
+            return runs;
+        }
+
+        public void Dispose()
+        {
+            foreach (var shaper in shapers) shaper.Dispose();
+            foreach (var font in fonts) font.Dispose();
+        }
+    }
     private Microsoft.Extensions.FileProviders.IFileInfo? LocalFile(string source, Uri publicOrigin)
     {
         string path;
