@@ -74,6 +74,7 @@ builder.Services.AddAuthorization(options => options.AddPolicy("Administrator", 
 var paymentwingsHttp = new HttpClient { BaseAddress = new Uri("https://api.paymentwings.com"), Timeout = TimeSpan.FromSeconds(20) };
 var onePayHttp = new HttpClient { BaseAddress = new Uri("https://api.1pay.cx/"), Timeout = TimeSpan.FromSeconds(20) };
 var app = builder.Build();
+using var socialImages = new SocialImages(app.Environment);
 await InitializeDatabase();
 // Retained to verify donations created before the 1pay.cx checkout migration.
 var paylioHttp = new HttpClient { BaseAddress = new Uri("https://paylio.org/api/v1/"), Timeout = TimeSpan.FromSeconds(20) };
@@ -170,8 +171,22 @@ app.MapGet("/fundraisers/{slug}", async (string slug, CancellationToken cancella
         .Append("<meta name=\"twitter:title\" content=\"").Append(encode(title)).Append("\">\n")
         .Append("<meta name=\"twitter:description\" content=\"").Append(encode(description)).Append("\">\n");
     if (imageUri is not null)
-        metadata.Append("<meta property=\"og:image\" content=\"").Append(encode(imageUri.AbsoluteUri)).Append("\">\n")
-            .Append("<meta name=\"twitter:image\" content=\"").Append(encode(imageUri.AbsoluteUri)).Append("\">\n");
+    {
+        try
+        {
+            var version = socialImages.Version(imageValue, publicOrigin);
+            var socialImage = new Uri(publicOrigin, "/social-images/" + Uri.EscapeDataString(reader.GetString(0)) + ".jpg?v=" + version).AbsoluteUri;
+            metadata.Append("<meta property=\"og:image\" content=\"").Append(encode(socialImage)).Append("\">\n")
+                .Append("<meta name=\"twitter:image\" content=\"").Append(encode(socialImage)).Append("\">\n")
+                .Append("<meta property=\"og:image:width\" content=\"1200\">\n")
+                .Append("<meta property=\"og:image:height\" content=\"630\">\n")
+                .Append("<meta property=\"og:image:type\" content=\"image/jpeg\">\n");
+        }
+        catch (InvalidDataException issue)
+        {
+            app.Logger.LogWarning(issue, "Fundraiser {Slug} has an invalid cover image path for social previews.", slug);
+        }
+    }
     const string defaultDescription = "<meta name=\"description\" content=\"Find a cause close to your heart. Give with care, and help your community move forward with Kindwell.\">";
     const string defaultTitle = "<title>Kindwell — Good things grow together</title>";
     if (!template.Contains(defaultDescription, StringComparison.Ordinal) || !template.Contains(defaultTitle, StringComparison.Ordinal))
@@ -180,6 +195,41 @@ app.MapGet("/fundraisers/{slug}", async (string slug, CancellationToken cancella
         .Replace(defaultTitle, $"<title>{encode(title)} | Kindwell</title>", StringComparison.Ordinal);
     return Results.Content(template, "text/html; charset=utf-8");
 });
+
+app.MapGet("/social-images/{slug}.jpg", async (string slug, HttpContext context, CancellationToken cancellationToken) =>
+{
+    await using var db = await OpenDatabase(cancellationToken);
+    await using var command = db.CreateCommand();
+    command.CommandText = "SELECT image_url FROM fundraisers WHERE slug=$slug AND published=1";
+    command.Parameters.AddWithValue("$slug", slug);
+    var value = await command.ExecuteScalarAsync(cancellationToken);
+    if (value is not string source) return Results.NotFound();
+    var configuredBase = Environment.GetEnvironmentVariable("PUBLIC_BASE_URL");
+    var baseUrl = string.IsNullOrWhiteSpace(configuredBase) ? "https://kindwell.care" : configuredBase.Trim().TrimEnd('/');
+    if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var publicOrigin) || publicOrigin.Scheme != Uri.UriSchemeHttps
+        || !string.IsNullOrEmpty(publicOrigin.UserInfo) || publicOrigin.AbsolutePath != "/" || !string.IsNullOrEmpty(publicOrigin.Query) || !string.IsNullOrEmpty(publicOrigin.Fragment))
+    {
+        app.Logger.LogError("PUBLIC_BASE_URL must be an HTTPS origin to generate fundraiser social images.");
+        return Results.Problem("Fundraiser social images are temporarily unavailable.", statusCode: 503);
+    }
+    try
+    {
+        source = source.Trim();
+        var version = socialImages.Version(source, publicOrigin);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(25));
+        var bytes = await socialImages.GenerateAsync(source, publicOrigin, slug + ":" + version, timeout.Token);
+        context.Response.Headers.CacheControl = "public, max-age=3600";
+        return Results.File(bytes, "image/jpeg");
+    }
+    catch (Exception issue) when (issue is IOException or InvalidDataException or HttpRequestException or OperationCanceledException)
+    {
+        if (cancellationToken.IsCancellationRequested) throw;
+        app.Logger.LogWarning(issue, "Could not generate the social image for fundraiser {Slug}.", slug);
+        return Results.Problem("The fundraiser social image is temporarily unavailable.", statusCode: 502);
+    }
+}).WithName("FundraiserSocialImage").WithSummary("Get a fundraiser's generated social-sharing image")
+  .Produces(StatusCodes.Status200OK, contentType: "image/jpeg").Produces(StatusCodes.Status404NotFound).Produces(StatusCodes.Status502BadGateway);
 
 app.MapGet("/api/payment-demo", async () =>
 {

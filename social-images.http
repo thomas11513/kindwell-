@@ -1,0 +1,7 @@
+@baseUrl = http://localhost:5080
+
+### Generated image for a seeded fundraiser
+GET {{baseUrl}}/social-images/a-brighter-start-for-maya.jpg
+
+### Unknown fundraiser
+GET {{baseUrl}}/social-images/not-a-real-fundraiser.jpg
