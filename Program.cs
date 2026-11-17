@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Antiforgery;
@@ -121,6 +122,63 @@ app.MapGet("/api/fundraisers", async () =>
     var campaigns = new List<object>();
     while (await reader.ReadAsync()) campaigns.Add(ReadFundraiser(reader));
     return Results.Ok(campaigns);
+});
+
+app.MapGet("/fundraisers/{slug}", async (string slug, CancellationToken cancellationToken) =>
+{
+    await using var db = await OpenDatabase(cancellationToken);
+    await using var command = db.CreateCommand();
+    command.CommandText = "SELECT slug,title,summary,story,image_url FROM fundraisers WHERE slug=$slug AND published=1";
+    command.Parameters.AddWithValue("$slug", slug);
+    await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+    var template = await System.IO.File.ReadAllTextAsync(Path.Combine(app.Environment.WebRootPath, "index.html"), cancellationToken);
+    if (!await reader.ReadAsync(cancellationToken))
+        return Results.Content(template, "text/html; charset=utf-8", statusCode: StatusCodes.Status404NotFound);
+
+    var configuredBase = Environment.GetEnvironmentVariable("PUBLIC_BASE_URL");
+    var baseUrl = string.IsNullOrWhiteSpace(configuredBase) ? "https://kindwell.care" : configuredBase.Trim().TrimEnd('/');
+    if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var publicOrigin) || publicOrigin.Scheme != Uri.UriSchemeHttps
+        || !string.IsNullOrEmpty(publicOrigin.UserInfo) || publicOrigin.AbsolutePath != "/" || !string.IsNullOrEmpty(publicOrigin.Query) || !string.IsNullOrEmpty(publicOrigin.Fragment))
+    {
+        app.Logger.LogError("PUBLIC_BASE_URL must be an HTTPS origin to generate fundraiser social previews.");
+        return Results.Problem("Fundraiser previews are temporarily unavailable.", statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+
+    var title = reader.GetString(1).Trim();
+    var description = reader.GetString(2).Trim();
+    if (description.Length == 0) description = reader.GetString(3).Trim();
+    var canonical = new Uri(publicOrigin, "/fundraisers/" + Uri.EscapeDataString(reader.GetString(0))).AbsoluteUri;
+    var imageValue = reader.GetString(4).Trim();
+    Uri? imageUri = null;
+    if (imageValue.StartsWith('/') && !imageValue.StartsWith("//", StringComparison.Ordinal) && !imageValue.Contains('\\'))
+        Uri.TryCreate(publicOrigin, imageValue, out imageUri);
+    else if (Uri.TryCreate(imageValue, UriKind.Absolute, out var externalImage) && externalImage.Scheme == Uri.UriSchemeHttps && string.IsNullOrEmpty(externalImage.UserInfo))
+        imageUri = externalImage;
+    if (imageUri is null)
+        app.Logger.LogWarning("Fundraiser {Slug} has no valid HTTPS cover image for social previews.", slug);
+
+    Func<string, string> encode = HtmlEncoder.Default.Encode;
+    var metadata = new StringBuilder()
+        .Append("<meta name=\"description\" content=\"").Append(encode(description)).Append("\">\n")
+        .Append("<link rel=\"canonical\" href=\"").Append(encode(canonical)).Append("\">\n")
+        .Append("<meta property=\"og:title\" content=\"").Append(encode(title)).Append("\">\n")
+        .Append("<meta property=\"og:description\" content=\"").Append(encode(description)).Append("\">\n")
+        .Append("<meta property=\"og:url\" content=\"").Append(encode(canonical)).Append("\">\n")
+        .Append("<meta property=\"og:type\" content=\"website\">\n")
+        .Append("<meta property=\"og:site_name\" content=\"Kindwell\">\n")
+        .Append("<meta name=\"twitter:card\" content=\"summary_large_image\">\n")
+        .Append("<meta name=\"twitter:title\" content=\"").Append(encode(title)).Append("\">\n")
+        .Append("<meta name=\"twitter:description\" content=\"").Append(encode(description)).Append("\">\n");
+    if (imageUri is not null)
+        metadata.Append("<meta property=\"og:image\" content=\"").Append(encode(imageUri.AbsoluteUri)).Append("\">\n")
+            .Append("<meta name=\"twitter:image\" content=\"").Append(encode(imageUri.AbsoluteUri)).Append("\">\n");
+    const string defaultDescription = "<meta name=\"description\" content=\"Find a cause close to your heart. Give with care, and help your community move forward with Kindwell.\">";
+    const string defaultTitle = "<title>Kindwell — Good things grow together</title>";
+    if (!template.Contains(defaultDescription, StringComparison.Ordinal) || !template.Contains(defaultTitle, StringComparison.Ordinal))
+        throw new InvalidOperationException("The fundraiser HTML template is missing its metadata placeholders.");
+    template = template.Replace(defaultDescription, metadata.ToString(), StringComparison.Ordinal)
+        .Replace(defaultTitle, $"<title>{encode(title)} | Kindwell</title>", StringComparison.Ordinal);
+    return Results.Content(template, "text/html; charset=utf-8");
 });
 
 app.MapGet("/api/payment-demo", async () =>

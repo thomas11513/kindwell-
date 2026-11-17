@@ -14,6 +14,12 @@ dotnet run --urls http://localhost:5080
 
 The first run creates `App_Data/kindwell.db` and seeds three example campaign pages with no prior gifts or raised balance. Campaigns, donation records, and uploaded images persist locally across restarts. The example campaign stories are sample content; replace them before public launch.
 
+## Fundraiser sharing
+
+Published fundraiser pages include server-rendered Open Graph, Twitter and canonical tags using the fundraiser's title, summary and cover image. Set `PUBLIC_BASE_URL` to the public HTTPS origin (for example `https://kindwell.care`); if unset, preview URLs use `https://kindwell.care`. Use publicly accessible HTTPS image URLs or uploaded images, and use a 1200×630 cover image where practical. Image URLs are not resized by the site; a non-HTTPS or invalid external image is omitted from the preview and logged rather than replaced with an unrelated image. Social networks cache previews, so updated metadata may take time to appear and may require a refresh using their sharing debugger. Facebook, WhatsApp and native share send the fundraiser URL; the separate in-page preview slides are not sent as images.
+
+To run the preview integration checks, start a local server with a fresh `DATA_DIR` and `PUBLIC_BASE_URL=https://kindwell.care`, then run `node --test tests/social-preview.test.cjs` with `SOCIAL_TEST_URL` set to the local server URL. The tests use the seeded fundraiser records and do not contact social networks.
+
 ## Current application scope
 
 The application uses ASP.NET Core 8, SQLite, and a small browser-native JavaScript frontend. The public fundraiser list supports database-backed text search, category filters, sorting, and pagination; administrators can manage drafts, categories, images, publication, and campaign updates. Administrator payment history is filterable by status and date. Provider-confirmed gifts are recorded as balanced journal postings (processor clearing debit and campaign funds payable credit) in the private `/api/admin/ledger` API. Weekly, monthly, all-time, and custom-date reports are based on stored donation/payment data and ledger entries; daily aggregates use UTC payment confirmation dates and can be exported as CSV. These entries do not represent processor settlements or beneficiary payouts. Processor fees, refunds, reserves, and payouts are not yet modeled.

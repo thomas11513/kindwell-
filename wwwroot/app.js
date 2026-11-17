@@ -103,7 +103,21 @@ async function renderPaymentDemo() {
 }
 
 function fundraiserUrl(campaign) {
-  return new URL(`/fundraisers/${encodeURIComponent(campaign.slug)}`, location.origin).href;
+  const url = new URL(`/fundraisers/${encodeURIComponent(campaign.slug)}`, location.origin);
+  const canonical = document.querySelector('link[rel="canonical"]');
+  if (canonical) {
+    const canonicalUrl = new URL(canonical.href);
+    if (canonicalUrl.pathname === url.pathname) return canonicalUrl.href;
+  }
+  return url.href;
+}
+
+function socialShareUrls(campaign, url) {
+  const facebook = new URL("https://www.facebook.com/sharer/sharer.php");
+  facebook.searchParams.set("u", url);
+  const whatsapp = new URL("https://api.whatsapp.com/send");
+  whatsapp.searchParams.set("text", `${campaign.title}\n${url}`);
+  return { facebook: facebook.href, whatsapp: whatsapp.href };
 }
 
 async function copyFundraiserLink(url, notice) {
@@ -128,6 +142,8 @@ function openShareDialog(campaign, trigger) {
   root.innerHTML = `<div class="modal-backdrop share-backdrop" role="presentation"><section class="share-dialog" role="dialog" aria-modal="true" aria-labelledby="share-dialog-title"><button type="button" class="modal-close" aria-label="Close share window">×</button><h2 id="share-dialog-title">Share this fundraiser</h2><p>Help more people discover this fundraiser.</p><div class="share-slides" aria-label="Fundraiser share preview"><article class="share-preview share-slide" aria-label="Slide 1 of 2"><div class="share-preview-image"><img src="${esc(campaign.image)}" alt=""></div><div class="share-preview-body"><img class="share-preview-logo" src="/kindwell-logo.png" alt="Kindwell"><div class="share-preview-raised">${esc(money(campaign.raised))} raised</div><div class="share-preview-ring" style="--pct:${pct}" aria-label="${pct} percent funded"><span>${pct}%</span></div><h3>${esc(campaign.title)}</h3><span class="share-preview-donate">Donate now!</span><div class="share-preview-url">${esc(url)}</div></div></article><article class="share-story-slide share-slide" aria-label="Slide 2 of 2"><div class="share-story-card"><span class="share-story-quote" aria-hidden="true">&ldquo;</span><p>${esc(storyExcerpt)}</p><span class="share-story-quote share-story-quote-end" aria-hidden="true">&rdquo;</span><strong class="share-story-author">${esc(organizerName || "The fundraiser organizer")}</strong><span class="share-story-title">${esc(campaign.title)}</span></div></article></div><div class="share-slide-dots" role="group" aria-label="Choose a preview slide"><button type="button" class="share-slide-dot active" aria-label="Show fundraiser cover" aria-current="true"></button><button type="button" class="share-slide-dot" aria-label="Show fundraiser story"></button></div><label for="share-link">Fundraiser link</label><div class="share-link-row"><input id="share-link" type="text" readonly value="${esc(url)}"><button type="button" class="button" id="share-copy">Copy link</button></div><p class="share-status" role="status" aria-live="polite"></p>${navigator.share ? `<button type="button" class="button button-light share-native">Share fundraiser</button>` : ""}</section></div>`;
   const dialog = root.querySelector(".share-dialog");
   const notice = root.querySelector(".share-status");
+  const socialUrls = socialShareUrls(campaign, url);
+  root.querySelector(".share-slide-dots").insertAdjacentHTML("afterend", `<div class="share-social"><a class="button button-light" href="${esc(socialUrls.facebook)}" target="_blank" rel="noopener noreferrer">Share on Facebook</a><a class="button button-light" href="${esc(socialUrls.whatsapp)}" target="_blank" rel="noopener noreferrer">Share on WhatsApp</a></div>`);
   const slides = root.querySelector(".share-slides");
   const slideDots = [...root.querySelectorAll(".share-slide-dot")];
   const updateSlideDots = () => {
@@ -147,7 +163,7 @@ function openShareDialog(campaign, trigger) {
   const handleKey = event => {
     if (event.key === "Escape") { event.preventDefault(); close(); return; }
     if (event.key !== "Tab") return;
-    const focusable = [...dialog.querySelectorAll("button:not(:disabled), input:not(:disabled)")];
+    const focusable = [...dialog.querySelectorAll("button:not(:disabled), input:not(:disabled), a[href]")];
     if (!dialog.contains(document.activeElement)) { event.preventDefault(); (event.shiftKey ? focusable[focusable.length - 1] : focusable[0]).focus(); }
     else if (event.shiftKey && document.activeElement === focusable[0]) { event.preventDefault(); focusable[focusable.length - 1].focus(); }
     else if (!event.shiftKey && document.activeElement === focusable[focusable.length - 1]) { event.preventDefault(); focusable[0].focus(); }
@@ -364,6 +380,7 @@ async function renderDetail(slug) {
   try { data = await request(`/api/fundraisers/${encodeURIComponent(slug)}`); }
   catch { appRoot.innerHTML = `${header()}<main class="page-wrap page-shell"><div class="auth-panel"><span class="auth-icon">!</span><h1>We couldn't find that fundraiser.</h1><p>It may have ended or the link may have changed.</p><a class="button" href="/#fundraisers">Browse fundraisers</a></div></main>${footer()}`; setupMenu(); return; }
   const campaign = data.campaign;
+  document.title = `${campaign.title} | Kindwell`;
   const pct = progress(campaign);
   const organizerMarkup = organizerProfileLink(campaign);
   const updatesMarkup = `<section class="campaign-updates"><h2>Updates from this fundraiser</h2>${data.updates.length ? data.updates.map(update => `<article class="campaign-update"><time datetime="${esc(update.date)}">${new Date(update.date).toLocaleDateString()}</time><h3>${esc(update.title)}</h3><p>${esc(update.body)}</p></article>`).join("") : `<p class="donor-count">The organizer hasn't shared any updates yet.</p>`}</section>`;

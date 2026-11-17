@@ -463,6 +463,8 @@ h1 { max-width: 570px; margin: 18px 0 17px; font: 400 clamp(44px, 5.2vw, 68px)/1
 .share-slide-dot { width: 10px; height: 10px; padding: 0; border: 0; border-radius: 50%; background: #cbd4ca; }
 .share-slide-dot.active { background: var(--forest); }
 .share-slide-dot:focus-visible { outline: 2px solid var(--forest); outline-offset: 3px; }
+.share-social { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 18px; }
+.share-social .button { min-height: 44px; padding: 8px; text-align: center; }
 .share-dialog label { display: block; margin-bottom: 6px; color: var(--forest-deep); font-size: 13px; font-weight: 700; }
 .share-link-row { display: flex; gap: 8px; }
 .share-link-row input { min-width: 0; flex: 1; padding: 10px; border: 1px solid #d6dfd8; border-radius: 7px; color: var(--ink); background: #fff; }

@@ -4,18 +4,36 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
-function shareHelpers(clipboard) {
+function shareHelpers(clipboard, canonical = null) {
   const source = fs.readFileSync(path.join(__dirname, "..", "wwwroot", "app.js"), "utf8");
   const start = source.indexOf("function fundraiserUrl(");
   const end = source.indexOf("function openShareDialog(", start);
-  const context = { URL, location: { origin: "https://kindwell.example" }, navigator: { clipboard } };
-  vm.runInNewContext(source.slice(start, end) + "\nglobalThis.helpers = { fundraiserUrl, copyFundraiserLink };", context);
+  const context = { URL, location: { origin: "https://kindwell.example" }, document: { querySelector: () => canonical && { href: canonical } }, navigator: { clipboard } };
+  vm.runInNewContext(source.slice(start, end) + "\nglobalThis.helpers = { fundraiserUrl, socialShareUrls, copyFundraiserLink };", context);
   return context.helpers;
 }
 
 test("fundraiser links use the encoded slug and site origin", () => {
   const { fundraiserUrl } = shareHelpers();
   assert.equal(fundraiserUrl({ slug: "a cause/with spaces" }), "https://kindwell.example/fundraisers/a%20cause%2Fwith%20spaces");
+});
+
+test("sharing uses a matching server-rendered canonical fundraiser URL", () => {
+  const { fundraiserUrl } = shareHelpers(null, "https://kindwell.care/fundraisers/my-cause");
+  assert.equal(fundraiserUrl({ slug: "my-cause" }), "https://kindwell.care/fundraisers/my-cause");
+  assert.equal(fundraiserUrl({ slug: "another" }), "https://kindwell.example/fundraisers/another");
+});
+
+test("Facebook and WhatsApp links contain the fundraiser URL and title", () => {
+  const { socialShareUrls } = shareHelpers();
+  const url = "https://kindwell.care/fundraisers/a-cause";
+  const links = socialShareUrls({ title: "Help & care" }, url);
+  const facebook = new URL(links.facebook);
+  const whatsapp = new URL(links.whatsapp);
+  assert.equal(facebook.origin + facebook.pathname, "https://www.facebook.com/sharer/sharer.php");
+  assert.equal(facebook.searchParams.get("u"), url);
+  assert.equal(whatsapp.origin + whatsapp.pathname, "https://api.whatsapp.com/send");
+  assert.equal(whatsapp.searchParams.get("text"), `Help & care\n${url}`);
 });
 
 test("copying the fundraiser link reports success", async () => {
