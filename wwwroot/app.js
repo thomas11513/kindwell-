@@ -103,11 +103,12 @@ async function renderPaymentDemo() {
 }
 
 function fundraiserUrl(campaign) {
-  const url = new URL(`/fundraisers/${encodeURIComponent(campaign.slug)}`, location.origin);
+  const url = new URL(`/fundraisers/${encodeURIComponent(campaign.slug)}`, "https://kindwell.care");
   const canonical = document.querySelector('link[rel="canonical"]');
   if (canonical) {
     const canonicalUrl = new URL(canonical.href);
-    if (canonicalUrl.pathname === url.pathname) return canonicalUrl.href;
+    if (canonicalUrl.protocol === "https:" && canonicalUrl.hostname !== "onrender.com" && !canonicalUrl.hostname.endsWith(".onrender.com")
+        && canonicalUrl.pathname === url.pathname) return canonicalUrl.href;
   }
   return url.href;
 }

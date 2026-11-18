@@ -13,15 +13,20 @@ function shareHelpers(clipboard, canonical = null) {
   return context.helpers;
 }
 
-test("fundraiser links use the encoded slug and site origin", () => {
+test("fundraiser links use the encoded slug and Kindwell domain without a canonical tag", () => {
   const { fundraiserUrl } = shareHelpers();
-  assert.equal(fundraiserUrl({ slug: "a cause/with spaces" }), "https://kindwell.example/fundraisers/a%20cause%2Fwith%20spaces");
+  assert.equal(fundraiserUrl({ slug: "a cause/with spaces" }), "https://kindwell.care/fundraisers/a%20cause%2Fwith%20spaces");
 });
 
 test("sharing uses a matching server-rendered canonical fundraiser URL", () => {
   const { fundraiserUrl } = shareHelpers(null, "https://kindwell.care/fundraisers/my-cause");
   assert.equal(fundraiserUrl({ slug: "my-cause" }), "https://kindwell.care/fundraisers/my-cause");
-  assert.equal(fundraiserUrl({ slug: "another" }), "https://kindwell.example/fundraisers/another");
+  assert.equal(fundraiserUrl({ slug: "another" }), "https://kindwell.care/fundraisers/another");
+});
+
+test("sharing never uses a Render canonical URL", () => {
+  const { fundraiserUrl } = shareHelpers(null, "https://kindwell.onrender.com/fundraisers/my-cause");
+  assert.equal(fundraiserUrl({ slug: "my-cause" }), "https://kindwell.care/fundraisers/my-cause");
 });
 
 test("Facebook and WhatsApp links contain the fundraiser URL and title", () => {

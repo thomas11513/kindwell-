@@ -153,10 +153,19 @@ app.MapGet("/fundraisers/{slug}", async (string slug, CancellationToken cancella
         return Results.Problem("Fundraiser previews are temporarily unavailable.", statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 
+    var configuredShareBase = Environment.GetEnvironmentVariable("SHARE_BASE_URL");
+    var shareBase = string.IsNullOrWhiteSpace(configuredShareBase) ? "https://kindwell.care" : configuredShareBase.Trim().TrimEnd('/');
+    if (!Uri.TryCreate(shareBase, UriKind.Absolute, out var shareOrigin) || shareOrigin.Scheme != Uri.UriSchemeHttps
+        || !string.IsNullOrEmpty(shareOrigin.UserInfo) || shareOrigin.AbsolutePath != "/" || !string.IsNullOrEmpty(shareOrigin.Query) || !string.IsNullOrEmpty(shareOrigin.Fragment))
+    {
+        app.Logger.LogError("SHARE_BASE_URL must be an HTTPS origin to generate fundraiser social previews.");
+        return Results.Problem("Fundraiser previews are temporarily unavailable.", statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+
     var title = reader.GetString(1).Trim();
     var description = reader.GetString(2).Trim();
     if (description.Length == 0) description = reader.GetString(3).Trim();
-    var canonical = new Uri(publicOrigin, "/fundraisers/" + Uri.EscapeDataString(reader.GetString(0))).AbsoluteUri;
+    var canonical = new Uri(shareOrigin, "/fundraisers/" + Uri.EscapeDataString(reader.GetString(0))).AbsoluteUri;
     var imageValue = reader.GetString(4).Trim();
     Uri? imageUri = null;
     if (imageValue.StartsWith('/') && !imageValue.StartsWith("//", StringComparison.Ordinal) && !imageValue.Contains('\\'))
@@ -184,7 +193,7 @@ app.MapGet("/fundraisers/{slug}", async (string slug, CancellationToken cancella
         {
             var details = new SocialImageData(imageValue, title, reader.GetString(5), reader.GetInt64(6), reader.GetInt64(7));
             var version = socialImages.Version(details, publicOrigin);
-            var socialImage = new Uri(publicOrigin, "/social-images/" + Uri.EscapeDataString(reader.GetString(0)) + ".jpg?v=" + version).AbsoluteUri;
+            var socialImage = new Uri(shareOrigin, "/social-images/" + Uri.EscapeDataString(reader.GetString(0)) + ".jpg?v=" + version).AbsoluteUri;
             metadata.Append("<meta property=\"og:image\" content=\"").Append(encode(socialImage)).Append("\">\n")
                 .Append("<meta name=\"twitter:image\" content=\"").Append(encode(socialImage)).Append("\">\n")
                 .Append("<meta property=\"og:image:width\" content=\"1200\">\n")
