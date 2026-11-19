@@ -13,9 +13,9 @@ test("video uses current published fundraiser data and is a mobile-compatible MP
   const { DatabaseSync } = require("node:sqlite");
   const db = new DatabaseSync(database);
   const slug = "a-brighter-start-for-maya";
-  const original = db.prepare("SELECT image_url,title,story,raised FROM fundraisers WHERE slug=?").get(slug);
+  const original = db.prepare("SELECT image_url,title,story,raised,category FROM fundraisers WHERE slug=?").get(slug);
   assert.ok(original);
-  const update = db.prepare("UPDATE fundraisers SET image_url=?,title=?,story=?,raised=? WHERE slug=?");
+  const update = db.prepare("UPDATE fundraisers SET image_url=?,title=?,story=?,raised=?,category=? WHERE slug=?");
   async function download() {
     const response = await fetch(`${base}/social-videos/${slug}.mp4`);
     if (!response.ok) assert.fail(`Video request failed (${response.status}): ${await response.text()}`);
@@ -25,6 +25,7 @@ test("video uses current published fundraiser data and is a mobile-compatible MP
   }
   try {
     assert.equal((await fetch(`${base}/social-videos/not-a-real-fundraiser.mp4`)).status, 404);
+    update.run(original.image_url, original.title, original.story, original.raised, "Medical", slug);
     const first = await download();
     const probe = spawnSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height,pix_fmt:format=duration", "-of", "json", "-i", "pipe:0"], { input: first, encoding: "utf8" });
     assert.equal(probe.status, 0, probe.stderr);
@@ -48,11 +49,20 @@ test("video uses current published fundraiser data and is a mobile-compatible MP
     const middle = volume(2, 3);
     assert.ok(volume(0, 0.1) < middle - 8, "music fades in");
     assert.ok(volume(12.9, 13) < middle - 8, "music fades out");
-    update.run(cover, "Updated fundraiser title", "A different fundraiser story.", original.raised + 12345, slug);
+    update.run(original.image_url, original.title, original.story, original.raised, "Education", slug);
+    const categoryVideo = await download();
+    const iconPixels = videoBytes => {
+      const frame = spawnSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-ss", "2", "-i", "pipe:0", "-vf", "crop=140:140:690:1225", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], { input: videoBytes });
+      assert.equal(frame.status, 0, frame.stderr.toString());
+      assert.equal(frame.stdout.length, 140 * 140 * 3);
+      return frame.stdout;
+    };
+    assert.notDeepEqual(iconPixels(categoryVideo), iconPixels(first));
+    update.run(cover, "Updated fundraiser title", "A different fundraiser story.", original.raised + 12345, "Education", slug);
     const updated = await download();
     assert.notDeepEqual(updated, first);
   } finally {
-    update.run(original.image_url, original.title, original.story, original.raised, slug);
+    update.run(original.image_url, original.title, original.story, original.raised, original.category, slug);
     db.close();
   }
 });

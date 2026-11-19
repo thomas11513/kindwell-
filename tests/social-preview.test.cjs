@@ -68,6 +68,36 @@ test("unknown fundraisers return 404 and the homepage retains its default HTML",
   assert.doesNotMatch(homepage, /property="og:title"/);
 });
 
+test("category changes update the static social image icon and URL", {
+  skip: !base || !process.env.SOCIAL_TEST_DATABASE || !process.env.SOCIAL_TEST_COVER
+}, async () => {
+  const { DatabaseSync } = require("node:sqlite");
+  const db = new DatabaseSync(process.env.SOCIAL_TEST_DATABASE);
+  const slug = "a-brighter-start-for-maya";
+  const original = db.prepare("SELECT category,image_url FROM fundraisers WHERE slug=?").get(slug);
+  const update = db.prepare("UPDATE fundraisers SET category=?,image_url=? WHERE slug=?");
+  const snapshot = async category => {
+    update.run(category, process.env.SOCIAL_TEST_COVER, slug);
+    const url = socialImage(await (await fetch(`${base}/fundraisers/${slug}`)).text(), slug);
+    const response = await fetch(new URL(url.pathname + url.search, base));
+    assert.equal(response.status, 200);
+    const image = Buffer.from(await response.arrayBuffer());
+    const pixels = spawnSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-vf", "crop=100:100:550:405", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], { input: image });
+    assert.equal(pixels.status, 0, pixels.stderr.toString());
+    assert.equal(pixels.stdout.length, 100 * 100 * 3);
+    return { url: url.href, pixels: pixels.stdout };
+  };
+  try {
+    const medical = await snapshot("Medical");
+    const education = await snapshot("Education");
+    assert.notEqual(medical.url, education.url);
+    assert.notDeepEqual(medical.pixels, education.pixels);
+  } finally {
+    update.run(original.category, original.image_url, slug);
+    db.close();
+  }
+});
+
 test("escaped content, draft privacy, and relative cover URLs", { skip: !base || !process.env.SOCIAL_TEST_FIXTURES }, async () => {
   const response = await fetch(`${base}/fundraisers/escaping-test`, { headers: { Host: "attacker.example" } });
   assert.equal(response.status, 200);

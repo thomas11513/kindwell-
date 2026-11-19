@@ -59,7 +59,7 @@ test("copying reports clipboard failures and allows manual copying", async () =>
   }
 });
 
-function shareDialog(reducedMotion = false, fetchVideo = async () => ({ ok: false, status: 503, json: async () => ({ detail: "Video generation is busy." }) })) {
+function shareDialog(reducedMotion = false, fetchVideo = async () => ({ ok: false, status: 503, json: async () => ({ detail: "Video generation is busy." }) }), category = "Medical") {
   const source = fs.readFileSync(path.join(__dirname, "..", "wwwroot", "app.js"), "utf8");
   const start = source.indexOf("function openShareDialog(");
   const end = source.indexOf("function slugify(", start);
@@ -69,7 +69,7 @@ function shareDialog(reducedMotion = false, fetchVideo = async () => ({ ok: fals
     setAttribute(name, value) { this.attributes[name] = value; },
     removeAttribute(name) { delete this.attributes[name]; },
     addEventListener(name, callback) { this.listeners[name] = callback; },
-    insertAdjacentHTML() {}, focus() {}
+    insertAdjacentHTML(position, html) { this.insertedHTML = html; }, focus() {}
   });
   const track = element(), slides = element(), cards = [element(), element()], dots = [element(), element()];
   const platforms = [element(), element()];
@@ -104,7 +104,7 @@ function shareDialog(reducedMotion = false, fetchVideo = async () => ({ ok: fals
   };
   vm.runInNewContext(source.slice(start, end) + "\nglobalThis.openShareDialog = openShareDialog;", context);
   const trigger = { isConnected: true, focused: false, focus() { this.focused = true; } };
-  context.openShareDialog({ slug: "a-cause", title: "A <cause>", image: "/cover.jpg", organizerName: "An organizer", raised: 2500, goal: 10000, story: "A real & important story." }, trigger);
+  context.openShareDialog({ slug: "a-cause", title: "A <cause>", image: "/cover.jpg", organizerName: "An organizer", raised: 2500, goal: 10000, story: "A real & important story.", category }, trigger);
   return { root, track, cards, dots, slides, elements, platforms, document, trigger, downloaded, scheduled: () => scheduled, advance: () => { const task = scheduled; scheduled = null; task.callback(); } };
 }
 
@@ -128,6 +128,25 @@ test("preview uses fundraiser content and cycles after five seconds on each slid
   assert.equal(dialog.scheduled(), null);
   assert.equal(dialog.document.body.style.overflow, "auto");
   assert.equal(dialog.trigger.focused, true);
+});
+
+test("the progress ring uses the fundraiser category and defaults for unknown categories", () => {
+  for (const [category, expected] of [["Medical", "Medical"], ["Education", "Education"], ["Emergency", "Emergency"], ["Community", "Community"], ["Animals", "Animals"], ["Memorial", "Memorial"], ["Environment", "Environment"], ["Other", "Other"], ["unrecognized", "Other"]]) {
+    const dialog = shareDialog(false, undefined, category);
+    assert.ok(dialog.root.innerHTML.includes(`/category-icons.svg#${expected}`));
+    assert.match(dialog.root.innerHTML, /role="progressbar"[^>]*aria-valuenow="25"/);
+  }
+});
+
+test("each social sharing option has its own icon and label", () => {
+  const dialog = shareDialog();
+  for (const [html, labels] of [
+    [dialog.elements[".share-slide-dots"].insertedHTML, ["Facebook", "WhatsApp"]],
+    [dialog.elements[".share-social"].insertedHTML, ["TikTok", "YouTube"]]
+  ]) {
+    assert.equal((html.match(/class="share-platform-icon"/g) || []).length, 2);
+    for (const label of labels) assert.ok(html.includes(label));
+  }
 });
 
 test("manual navigation restarts the timer and reduced motion skips transition time", () => {

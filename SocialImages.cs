@@ -4,11 +4,12 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Xml.Linq;
 using Microsoft.Extensions.Caching.Memory;
 using SkiaSharp;
 using SkiaSharp.HarfBuzz;
 
-public sealed record SocialImageData(string Source, string Title, string Organizer, long Goal, long Raised);
+public sealed record SocialImageData(string Source, string Title, string Organizer, long Goal, long Raised, string Category);
 
 public sealed class SocialImages : IDisposable
 {
@@ -18,10 +19,18 @@ public sealed class SocialImages : IDisposable
     private readonly MemoryCache cache = new(new MemoryCacheOptions { SizeLimit = 32_000_000 });
     private readonly SemaphoreSlim generationSlots = new(2);
     private readonly HttpClient client;
+    private readonly Dictionary<string, string> categoryPaths;
 
     public SocialImages(IWebHostEnvironment environment)
     {
         this.environment = environment;
+        var symbols = XDocument.Load(Path.Combine(environment.WebRootPath, "category-icons.svg"));
+        XNamespace svg = "http://www.w3.org/2000/svg";
+        categoryPaths = symbols.Descendants(svg + "symbol").ToDictionary(
+            symbol => (string?)symbol.Attribute("id") ?? throw new InvalidDataException("Category icon has no ID."),
+            symbol => (string?)symbol.Element(svg + "path")?.Attribute("d") ?? throw new InvalidDataException("Category icon has no path."),
+            StringComparer.OrdinalIgnoreCase);
+        if (!categoryPaths.ContainsKey("Other")) throw new InvalidDataException("The default category icon is missing.");
         var handler = new SocketsHttpHandler
         {
             AllowAutoRedirect = false,
@@ -35,7 +44,7 @@ public sealed class SocialImages : IDisposable
     {
         var local = LocalFile(fundraiser.Source, publicOrigin);
         var stamp = local is { Exists: true } ? local.LastModified.UtcTicks.ToString() : "";
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes("kindwell-card-v2\n" + JsonSerializer.Serialize(fundraiser) + "\n" + stamp));
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes("kindwell-card-v3\n" + JsonSerializer.Serialize(fundraiser) + "\n" + stamp));
         return Convert.ToHexString(hash).ToLowerInvariant()[..20];
     }
 
@@ -123,8 +132,6 @@ public sealed class SocialImages : IDisposable
         using var logoImage = SKImage.FromBitmap(logo);
         using var ink = new SKPaint { Color = new SKColor(16, 62, 49), IsAntialias = true };
         using var muted = new SKPaint { Color = new SKColor(78, 103, 89), IsAntialias = true };
-        using var lime = new SKPaint { Color = new SKColor(196, 230, 104), IsAntialias = true };
-        using var track = new SKPaint { Color = new SKColor(220, 233, 213), IsAntialias = true };
         using var yellow = new SKPaint { Color = new SKColor(255, 223, 113), IsAntialias = true };
 
         byte[] Render(bool isStory)
@@ -159,10 +166,9 @@ public sealed class SocialImages : IDisposable
                 DrawWrappedText(canvas, "Organized by " + (string.IsNullOrWhiteSpace(fundraiser.Organizer) ? "Organizer not specified" : fundraiser.Organizer), bodyText, muted, 55, 805, 465, 110, 2, 38);
                 DrawWrappedText(canvas, Money(fundraiser.Raised) + " raised", titleText, ink, 55, 1170, 465, 65, 1, 48);
                 DrawWrappedText(canvas, "of " + Money(fundraiser.Goal), bodyText, muted, 55, 1240, 465, 55, 1, 38);
-                canvas.DrawRoundRect(new SKRect(55, 1335, 520, 1353), 9, 9, track);
                 var fraction = fundraiser.Goal > 0 ? Math.Clamp((double)fundraiser.Raised / fundraiser.Goal, 0, 1) : 0;
-                if (fraction > 0) canvas.DrawRoundRect(new SKRect(55, 1335, 55 + (float)(465 * fraction), 1353), 9, 9, lime);
-                using (var funded = new SKFont(regular, 32)) canvas.DrawText($"{Math.Round(fraction * 100, MidpointRounding.AwayFromZero)}% funded", 55, 1410, funded, muted);
+                DrawCategoryProgress(canvas, fundraiser.Category, fraction, 760, 1295, 112);
+                using (var funded = new SKFont(regular, 32)) canvas.DrawText($"{Math.Round(fraction * 100, MidpointRounding.AwayFromZero)}% funded", 55, 1360, funded, muted);
                 canvas.DrawRoundRect(new SKRect(680, 840, 1035, 915), 38, 38, yellow);
                 using var badge = new SKFont(bold, 32);
                 canvas.DrawText("Give a little good", 857, 889, SKTextAlign.Center, badge, ink);
@@ -228,27 +234,32 @@ public sealed class SocialImages : IDisposable
             organizerText, ink, 32, 523, 420, 95, 3, 35);
 
         canvas.DrawCircle(600, 455, 111, white);
-        using var track = new SKPaint { Color = new SKColor(232, 238, 233), IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 19, StrokeCap = SKStrokeCap.Round };
-        canvas.DrawCircle(600, 455, 91, track);
-        using var progress = new SKPaint { Color = new SKColor(76, 158, 85), IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 19, StrokeCap = SKStrokeCap.Round };
         var fraction = fundraiser.Goal > 0 ? Math.Clamp((double)fundraiser.Raised / fundraiser.Goal, 0, 1) : 0;
-        if (fraction >= 1) canvas.DrawCircle(600, 455, 91, progress);
-        else if (fraction > 0) canvas.DrawArc(new SKRect(509, 364, 691, 546), -90, (float)(360 * fraction), false, progress);
-        using var heart = new SKPath();
-        heart.MoveTo(600, 479);
-        heart.CubicTo(585, 466, 570, 455, 570, 443);
-        heart.CubicTo(570, 426, 590, 420, 600, 435);
-        heart.CubicTo(610, 420, 630, 426, 630, 443);
-        heart.CubicTo(630, 455, 615, 466, 600, 479);
-        heart.Close();
-        using var heartFill = new SKPaint { Color = progress.Color, IsAntialias = true };
-        canvas.DrawPath(heart, heartFill);
+        DrawCategoryProgress(canvas, fundraiser.Category, fraction, 600, 455, 91);
 
         var amount = fundraiser.Goal > 0 && fundraiser.Raised < fundraiser.Goal
             ? Money(fundraiser.Goal - Math.Max(0, fundraiser.Raised)) + " to goal"
             : Money(Math.Max(0, fundraiser.Raised)) + " raised";
         DrawBadge(canvas, amount, bold, 707, 425, 330, new SKColor(197, 239, 112), ink);
         DrawBadge(canvas, "Donate now!", bold, 852, 514, 292, new SKColor(255, 215, 72), ink);
+    }
+
+    private void DrawCategoryProgress(SKCanvas canvas, string category, double fraction, float x, float y, float radius)
+    {
+        using var track = new SKPaint { Color = new SKColor(220, 233, 213), IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = radius * .2f, StrokeCap = SKStrokeCap.Round };
+        using var progress = new SKPaint { Color = new SKColor(76, 158, 85), IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = radius * .2f, StrokeCap = SKStrokeCap.Round };
+        canvas.DrawCircle(x, y, radius, track);
+        if (fraction >= 1) canvas.DrawCircle(x, y, radius, progress);
+        else if (fraction > 0) canvas.DrawArc(new SKRect(x - radius, y - radius, x + radius, y + radius), -90, (float)(360 * fraction), false, progress);
+        var data = categoryPaths.TryGetValue(category, out var path) ? path : categoryPaths["Other"];
+        using var icon = SKPath.ParseSvgPathData(data) ?? throw new InvalidDataException("Invalid category icon path.");
+        using var iconPaint = new SKPaint { Color = progress.Color, IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 1.8f, StrokeCap = SKStrokeCap.Round, StrokeJoin = SKStrokeJoin.Round };
+        var size = radius * .95f;
+        canvas.Save();
+        canvas.Translate(x - size / 2, y - size / 2);
+        canvas.Scale(size / 24);
+        canvas.DrawPath(icon, iconPaint);
+        canvas.Restore();
     }
 
     private SKTypeface LoadFont(string filename) =>
